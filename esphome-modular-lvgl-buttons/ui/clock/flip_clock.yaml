@@ -1,0 +1,169 @@
+---
+# Flip Clock Widget - Gluqlo Style
+#
+# vars:
+#    uid:
+#    page_id:
+#    row:
+#    column:
+#    row_span:
+#    column_span:
+#    click_page:
+#    font_size:
+#    height:   inner clock height within the cell, e.g. "60%" or "200" (default "60%")
+#    style: "black" (default) or "white"
+
+font:
+  - file: "esphome-modular-lvgl-buttons/assets/fonts/gluqlo.ttf"
+    id: gluqlo_font
+    size: ${font_size | default(80)}
+    bpp: 8
+    glyphs: "0123456789"
+
+  - file: "esphome-modular-lvgl-buttons/assets/fonts/gluqlo.ttf"
+    id: gluqlo_font_sm
+    size: 10
+    bpp: 8
+    glyphs: "AMP"
+
+lvgl:
+  style_definitions:
+    - id: flip_panel_style
+      bg_color: ${"gray200" if style | default("black") == "white" else "gray900"}
+      bg_opa: cover
+      radius: 8
+      border_width: 0
+      pad_left: 8
+      pad_right: 8
+      pad_top: 16
+      pad_bottom: 8
+      scrollbar_mode: "OFF"
+
+    - id: flip_digit_style
+      text_font: gluqlo_font
+      text_color: ${"gray900" if style | default("black") == "white" else "gray400"}
+      align: center
+
+    - id: flip_outer_style
+      bg_opa: TRANSP
+
+    - id: flip_divider_style
+      bg_color: $bg_color
+      bg_opa: cover
+
+    - id: flip_ampm_style
+      text_font: gluqlo_font_sm
+      text_color: ${"gray900" if style | default("black") == "white" else "gray400"}
+
+  pages:
+    - id: !extend ${page_id | default("main_page")}
+      widgets:
+        - obj:
+            id: ${uid}
+            # outline_width: 1
+            # outline_color: red
+            grid_cell_row_pos: ${row}
+            grid_cell_column_pos: ${column}
+            grid_cell_row_span: ${row_span | default(1)}
+            grid_cell_column_span: ${column_span | default(1)}
+            grid_cell_x_align: stretch
+            grid_cell_y_align: stretch
+            styles: flip_outer_style
+            scrollbar_mode: "OFF"
+            pad_all: 0
+            on_short_click:
+              then:
+                lvgl.page.show: ${click_page | default("main_page")}
+            widgets:
+              # Flex container for the two panels
+              - obj:
+                  width: 100%
+                  height: ${height | default("60%")}
+                  align: CENTER
+                  bg_opa: TRANSP
+                  pad_all: 2
+                  scrollbar_mode: "OFF"
+                  scrollable: false
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_main: CENTER
+                    flex_align_cross: CENTER
+                    flex_align_track: CENTER
+                  widgets:
+                    # ── Hour Panel ──
+                    - obj:
+                        styles: flip_panel_style
+                        flex_grow: 1
+                        scrollable: false
+                        widgets:
+                          - label:
+                              id: flip_hour_label
+                              styles: flip_digit_style
+                              align: CENTER
+                              text: "12"
+                          - label:
+                              id: flip_am_label
+                              styles: flip_ampm_style
+                              align: TOP_LEFT
+                              pad_left: 0
+                              pad_top: 0
+                              x: -4
+                              y: -10
+                              text: "AM"
+                          - label:
+                              id: flip_pm_label
+                              styles: flip_ampm_style
+                              align: BOTTOM_LEFT
+                              pad_left: 0
+                              pad_bottom: 0
+                              x: -4
+                              y: 2
+                              text: "PM"
+                              hidden: true
+
+                    # ── Minute Panel ──
+                    - obj:
+                        styles: flip_panel_style
+                        flex_grow: 1
+                        scrollable: false
+                        widgets:
+                          - label:
+                              id: flip_min_label
+                              styles: flip_digit_style
+                              align: CENTER
+                              text: "00"
+
+              # Divider line - overlays across center of both panels
+              - obj:
+                  height: 2
+                  width: 100%
+                  align: CENTER
+                  styles: flip_divider_style
+                  pad_all: 0
+                  scrollable: false
+
+script:
+  - id: !extend time_update
+    then:
+      - lvgl.label.update:
+          id: flip_hour_label
+          text: !lambda |-
+            if (!id(system_time).now().is_valid()) return std::string("12");
+            int h = id(system_time).now().hour % 12;
+            if (h == 0) h = 12;
+            return std::to_string(h);
+      - lvgl.label.update:
+          id: flip_min_label
+          text: !lambda |-
+            if (!id(system_time).now().is_valid()) return std::string("00");
+            return str_sprintf("%02d", id(system_time).now().minute);
+      - if:
+          condition:
+            lambda: 'return id(system_time).now().is_valid() && id(system_time).now().hour >= 12;'
+          then:
+            - lvgl.widget.show: flip_pm_label
+            - lvgl.widget.hide: flip_am_label
+          else:
+            - lvgl.widget.show: flip_am_label
+            - lvgl.widget.hide: flip_pm_label

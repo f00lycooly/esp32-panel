@@ -1,0 +1,18 @@
+# Site config + secrets (ship only the .example files)
+user-config.yaml
+secrets.yaml
+secrets.yaml.bak
+
+# ESPHome build artefacts
+.esphome/
+build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Original third-party artwork (only the derived raster assets are shipped)
+glados_by_browen2o*.png
+
+# Optional site-specific deploy targets (see Makefile tail)
+deploy.local.mk

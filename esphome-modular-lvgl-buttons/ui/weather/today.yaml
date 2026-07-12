@@ -1,0 +1,216 @@
+---
+# Weather for today from Home Assistant
+#
+# vars:
+#   size: icon size (e.g., 200)
+#   weather_entity:
+#   weather_summary:
+
+mapping:
+  - id: weather_icon_${size}
+    from: string
+    to: image
+    entries:
+      clear-night: clear_night_${size}
+      cloudy: cloudy_${size}
+      exceptional: exceptional_${size}
+      fog: fog_${size}
+      hail: hail_${size}
+      lightning: lightning_${size}
+      lightning-rainy: lightning_rainy_${size}
+      partlycloudy: partlycloudy_${size}
+      partlycloudy-night: partlycloudy_${size}
+      pouring: pouring_${size}
+      rainy: rainy_${size}
+      snowy: snowy_${size}
+      snowy-rainy: snowy_rainy_${size}
+      sunny: sunny_${size}
+      windy: windy_${size}
+      windy-variant: windy_${size}
+      unknown: unknown_${size}
+      unavailable: unknown_${size}
+
+text_sensor:
+  - platform: homeassistant
+    entity_id: ${weather_entity | default("weather.home")}
+    id: weather_condition
+    on_value:
+      then:
+        - lvgl.image.update:
+            id: weather_condition_icon
+            src: !lambda 'return id(weather_icon_${size})[x];'
+
+  - platform: homeassistant
+    entity_id: ${weather_entity | default("weather.home")}
+    attribute: temperature
+    id: outdoor_temperature
+    on_value:
+      then:
+        # Update weather_condition
+        - lvgl.label.update:
+            id: weather_temperature_today
+            text:
+              format: "%s°"
+              args: ['id(outdoor_temperature).state.c_str()']
+
+  - platform: homeassistant
+    entity_id: ${weather_entity | default("weather.home")}
+    attribute: humidity
+    id: weather_humidity
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: weather_humidity_today
+            text:
+              format: "%s%%"
+              args: ['id(weather_humidity).state.c_str()']
+
+  - platform: homeassistant
+    entity_id: ${weather_entity | default("weather.home")}
+    attribute: pressure
+    id: weather_pressure
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: weather_pressure_today
+            text:
+              format: "%s hPa"
+              args: ['id(weather_pressure).state.c_str()']
+
+  - platform: homeassistant
+    entity_id: ${weather_entity | default("weather.home")}
+    attribute: wind_speed
+    id: weather_wind_speed
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: weather_wind_speed_today
+            text: !lambda |-
+              int speed = (int)(atof(id(weather_wind_speed).state.c_str()) + 0.5);
+              return str_sprintf("%dmph", speed);
+
+  - platform: homeassistant
+    entity_id: ${weather_entity | default("weather.home")}
+    attribute: wind_bearing
+    id: weather_wind_bearing
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: weather_wind_dir_today
+            text: !lambda |-
+              static const char* dirs[] = {"N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"};
+              if (!x.empty()) {
+                int bearing = (int)(atof(x.c_str()) + 0.5);
+                return std::string(dirs[((bearing % 360 + 11) / 22) % 16]);
+              }
+              return std::string("---");
+
+  - platform: homeassistant
+    entity_id: ${weather_entity | default("weather.home")}
+    attribute: visibility
+    id: weather_visibility
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: weather_visibility_today
+            text:
+              format: "%s mi"
+              args: ['id(weather_visibility).state.c_str()']
+
+  - platform: homeassistant
+    entity_id: ${weather_summary | default("sensor.none")}
+    id: weather_summary
+    on_value:
+      then:
+        - logger.log:
+            level: INFO
+            format: "weather_summary update: %s"
+            args: ['x.c_str()']
+        # Update weather summary
+        - lvgl.label.update:
+            id: weather_summary_today
+            text:
+              format: "%s"
+              args: ['id(weather_summary).state.c_str()']
+
+api:
+  on_client_connected:
+    - if:
+        condition:
+          lambda: 'return (0 == client_info.find("Home Assistant "));'
+        then:
+          - delay: 5s
+          - homeassistant.action:
+              action: homeassistant.update_entity
+              data:
+                entity_id: ${weather_summary}
+
+
+# Weather icons - included automatically
+# https://github.com/manifestinteractive/weather-underground-icons
+image:
+  rgb565:
+    alpha_channel:
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/nt_clear.svg
+        id: clear_night_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/cloudy.svg
+        id: cloudy_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/tstorms.svg
+        id: exceptional_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/fog.svg
+        id: fog_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/sleet.svg
+        id: hail_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/chancetstorms.svg
+        id: lightning_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/tstorms.svg
+        id: lightning_rainy_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/partlycloudy.svg
+        id: partlycloudy_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/rain.svg
+        id: pouring_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/chancerain.svg
+        id: rainy_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/snow.svg
+        id: snowy_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/chancesleet.svg
+        id: snowy_rainy_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/sunny.svg
+        id: sunny_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/windy.svg
+        id: windy_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/unknown.svg
+        id: unknown_${size}
+        resize: ${size}x${size}
+
+      - file: esphome-modular-lvgl-buttons/ui/weather/assets/images/circle-slash.svg
+        id: unavailable_${size}
+        resize: ${size}x${size}

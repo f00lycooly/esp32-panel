@@ -1,0 +1,36 @@
+# ───────────────────────────────────────────────────────────────────────────
+# person_photo.yaml — circular person photo
+#
+# A round avatar: an `image` clipped to a circle by a rounded container. The
+# image source is an `online_image` the CALLER declares (typically from a
+# `person.*` entity_picture, refreshed at runtime) and passes as `src`:
+#
+#   online_image:
+#     - id: who_p1_img
+#       url: !lambda 'return id(p1_pic).state;'   # a person entity attr entity_picture
+#       format: PNG
+#       resize: 96x96
+#   - obj:
+#       <<: !include {file: widgets/person_photo.yaml, vars: {uid: who_p1,
+#              size: 96, src: who_p1_img}}
+#
+# Used by the alarm "Who" picker and any presence avatar. A fallback glyph
+# (`ic_${uid}`, hidden by default) can be shown by the page when no picture loads.
+#
+# ids: ${uid} (ring), img_${uid} (photo), ic_${uid} (fallback glyph, hidden).
+# vars: uid, size, src, ring (default gray700), fallback_glyph (default $mdi_account)
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+width: ${size}
+height: ${size}
+radius: 9999
+clip_corner: true
+bg_color: gray800
+border_width: 2
+border_color: ${ring}
+pad_all: 0
+scrollable: false
+clickable: false
+widgets:
+  - image: {id: img_$uid, src: $src, align: CENTER, clickable: false}
+  - label: {id: ic_$uid, hidden: true, clickable: false, align: CENTER, text: $fallback_glyph, text_font: mdi_card_28, text_color: gray500}

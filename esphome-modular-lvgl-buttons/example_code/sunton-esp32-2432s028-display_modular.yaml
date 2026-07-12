@@ -1,0 +1,152 @@
+---
+# Substitution variables used through the codebase
+substitutions:
+  icon_font: mdi_icons_40
+  text_font: nunito_20
+  text_color: white
+  bg_color: black
+  button_on_color: "ep_orange"
+  button_off_color: "very_dark_gray"
+  icon_on_color: "yellow"
+  icon_off_color: "gray"
+  label_on_color: "white"
+  label_off_color: "gray"
+  button_text_color: "white"
+
+  # LCD back light modes - Code in backlight_time.yaml
+  display_daytime_brightness: "100%"
+  display_nighttime_brightness: "50%"
+  display_night_hour: "0"      # Hour for night mode (0-23)
+  display_night_minute: "0"    # Minute for night mode (0-59)
+  display_backlight_timeout_always_enabled: "false"  # Set true to dim/off in all modes, not just Night
+  display_backlight_timeout_initial: "5"  # Initial backlight timeout in minutes (-1 to disable)
+
+esphome:
+  name: "sunton-2432s028"
+  friendly_name: "Sunton ESP32-2432s028"
+  comment: "Sunton ESP32-2432s028"
+
+api:
+
+logger:
+  level: debug
+
+text_sensor:
+  - platform: template
+    id: device_last_restart
+    name: 'Last Restart'
+    icon: mdi:clock
+    entity_category: diagnostic
+
+  - platform: version
+    id: esphome_version
+    name: 'ESPHome Version'
+    hide_timestamp: true
+    hide_hash: true
+    icon: mdi:source-branch
+    entity_category: diagnostic
+
+# Time update script - This is run once per second. Use it to update any time related labels.
+script:
+  # --------------------------------------------------------------------------
+  # This script is called once per minute.
+  # Any packages in this library will !extend time_update to update their own labels.
+  # You can add code here to update your own custom labels.
+  # --------------------------------------------------------------------------
+  - id: time_update
+    then:
+      - lambda: |-
+          // No operation
+
+packages:
+  wifi: !include esphome-modular-lvgl-buttons/common/wifi.yaml
+  # Enable OTA updates with a status screen
+  ota_screen: !include esphome-modular-lvgl-buttons/common/ota.yaml
+  style:  !include esphome-modular-lvgl-buttons/common/theme/theme_style.yaml
+  colors: !include esphome-modular-lvgl-buttons/common/theme/color.yaml
+  glyphs: !include esphome-modular-lvgl-buttons/common/theme/mdi_glyph_substitutions.yaml
+  backlight: !include esphome-modular-lvgl-buttons/common/backlight_time.yaml
+
+  # Hardware description file
+  hardware: !include
+    file: esphome-modular-lvgl-buttons/hardware/sunton-esp32-2432s028.yaml
+    vars:
+      rotation: "0"  # set screen rotation 0, 90, 180, 270
+
+
+  # This section will add buttons and page to your screen using the ESPHome package system.
+  # Each package has all the code required for the button or page (LVGL, sensors, etc)
+
+  # Add a button the controls a light in HA
+  button_1: !include
+    file: esphome-modular-lvgl-buttons/ui/switch/remote.yaml
+    vars:
+      uid: button_1
+      row: 0
+      column: 0
+      text: Light
+      icon: $mdi_lightbulb
+      entity_id: "switch.athom_smart_plug_v3_50ebc0_switch"
+
+  button_2: !include
+    file: esphome-modular-lvgl-buttons/ui/clock/time_button.yaml
+    vars:
+      uid: button_2
+      row: 0
+      column: 1
+      text: 00:00
+
+# This is the main LVGL section. We start with a simple 4x4 grid.
+lvgl:
+  pages:
+    - id: main_page
+      layout: 2x2
+      styles: page_style
+      widgets:
+# You can use the package section above to add prebuilt button types or build your own custom button from scratch here.
+
+
+# If you want to use other icons add them to the list here
+font:
+  # http://materialdesignicons.com/cdn/7.4.47/
+  - file: 'https://github.com/Templarian/MaterialDesign-Webfont/raw/v7.4.47/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_icons_40
+    size: 40
+    bpp: 8
+    glyphs: [
+      $mdi_bed,  # mdi-bed - bedroom icon
+      $mdi_brightness_6,  # mdi-brightness-6 - brightness slider icon
+      $mdi_bulkhead_light,  # mdi-bulkhead-light - bulkhead fixture
+      $mdi_ceiling_fan_light,  # mdi-ceiling-fan-light - ceiling fan with light
+      $mdi_ceiling_light,  # mdi-ceiling-light - ceiling fixture
+      $mdi_chevron_down,  # mdi-chevron-down - close/collapse button
+      $mdi_chevron_up,  # mdi-chevron-up - back/expand button
+      $mdi_circle_opacity,  # mdi-circle-opacity - saturation slider icon
+      $mdi_coach_lamp,  # mdi-coach-lamp - outdoor coach light
+      $mdi_eyedropper,  # mdi-eyedropper - spectrum mode toggle
+      $mdi_floor_lamp,  # mdi-floor-lamp - floor lamp
+      $mdi_grid,  # mdi-grid - grid mode toggle
+      $mdi_home,  # mdi-home - home/back navigation
+      $mdi_information_box,  # mdi-information-box - info screen
+      $mdi_lamp,  # mdi-lamp - table lamp
+      $mdi_led_strip,  # mdi-led-strip - LED strip light
+      $mdi_lightbulb,  # mdi-lightbulb - generic bulb icon
+      $mdi_string_lights,  # mdi-string-lights - decorative string lights
+      $mdi_track_light,  # mdi-track-light - track lighting
+      $mdi_white_balance_sunny,  # mdi-white-balance-sunny - color temp/sun icon
+    ]
+
+  - file: "esphome-modular-lvgl-buttons/assets/fonts/Nunito-SemiBold.ttf"
+    id: nunito_20
+    size: 20
+    bpp: 8
+
+  - file: "esphome-modular-lvgl-buttons/assets/fonts/Nunito-SemiBold.ttf"
+    id: nunito_18
+    size: 18
+    bpp: 8
+
+  - file: "esphome-modular-lvgl-buttons/assets/fonts/Nunito-SemiBold.ttf"
+    id: nunito_12
+    size: 12
+    bpp: 8

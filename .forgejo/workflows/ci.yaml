@@ -1,0 +1,49 @@
+# esp32-panel CI (Forgejo Actions)
+#
+# Two jobs:
+#   secret-scan — the publish gate; cheap, must always pass.
+#   validate    — pip-installs esphome and runs `esphome config` on the device
+#                 file with the .example site files copied into place. Heavier
+#                 (~2-3 min pip install per run); treated as best-effort — if
+#                 the runner lacks network/pip capacity, disable this job
+#                 rather than the scan.
+#
+# If no Forgejo runner is registered for this repo the workflow simply never
+# runs; that is harmless.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  secret-scan:
+    runs-on: docker
+    container:
+      image: debian:bookworm-slim
+    steps:
+      - name: Install prerequisites
+        run: apt-get update -qq && apt-get install -y -qq git binutils >/dev/null
+      - uses: actions/checkout@v4
+      - name: Run secret scan
+        run: bash scripts/secret-scan.sh
+
+  # Optional/best-effort: full ESPHome schema validation. Remove or comment
+  # out this job if the runner cannot afford the pip install.
+  validate:
+    runs-on: docker
+    container:
+      image: python:3.12-slim
+    steps:
+      - name: Install git
+        run: apt-get update -qq && apt-get install -y -qq git >/dev/null
+      - uses: actions/checkout@v4
+      - name: Install ESPHome
+        run: pip install --quiet esphome
+      - name: Provision example site files
+        run: |
+          cp user-config.yaml.example user-config.yaml
+          cp secrets.yaml.example secrets.yaml
+      - name: esphome config
+        run: esphome config waveshare-p4-86-panel.yaml

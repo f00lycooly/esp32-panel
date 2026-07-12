@@ -1,0 +1,165 @@
+# waveshare 7” ESP32-S3N8R8 Capacitive Touch Display 1024×600
+# 512KB SRAM and 384KB ROM, with onboard 16MB Flash and 8MB PSRAM
+# https://www.waveshare.com/esp32-s3-lcd-7b.htm
+# Hardware configuration file
+---
+
+esphome:
+  min_version: 2026.5.0
+  project:
+    name: "Waveshare.ESP32-S3-Touch-LCD-7B"
+    version: "1.0.0"
+
+esp32:
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    advanced:
+      execute_from_psram: true
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+preferences:
+  flash_write_interval: 5min
+
+# -------------------------------------------
+# IO Extender
+# -------------------------------------------
+external_components:
+  - source: github://pr#10071
+    components: [waveshare_io_ch32v003]
+    refresh: 1h
+
+waveshare_io_ch32v003:
+  - id: wave_io
+    address: 0x24
+    i2c_id: bus_a
+
+power_supply:
+  - id: wave_io_backlight_enable
+    pin:
+      waveshare_io_ch32v003: wave_io
+      number: 2
+      mode:
+        output: true
+    enable_time: 0ms
+    keep_on_time: 0ms
+
+# -------------------------------------------
+# LCD Back light
+# -------------------------------------------
+output:
+  - platform: waveshare_io_ch32v003
+    id: pwm_backlight_output
+    power_supply: wave_io_backlight_enable
+    inverted: true
+    zero_means_zero: true
+    safe_pwm_levels:
+      min_value: 1
+      max_value: 247
+
+  - platform: ledc
+    pin: GPIO6
+    id: buzzer
+
+light:
+  - platform: monochromatic
+    output: pwm_backlight_output
+    name: "Display Backlight"
+    icon: mdi:lightbulb-on
+    id: display_backlight
+    restore_mode: RESTORE_DEFAULT_ON
+    default_transition_length: 750ms
+
+# -------------------------------------------
+# Touchscreen gt911
+# -------------------------------------------
+i2c:
+  - id: bus_a
+    sda: GPIO08
+    scl: GPIO09
+    scan: true
+
+touchscreen:
+  platform: gt911
+  id: my_touchscreen
+  display: my_display
+  i2c_id: bus_a
+  interrupt_pin: GPIO4
+  reset_pin:
+    waveshare_io_ch32v003: wave_io
+    number: 1
+    mode: OUTPUT
+# on_touch:
+#   - lambda: |-
+#       ESP_LOGI("Touch", "Touch detected at x=%d, y=%d", touch.x, touch.y);
+# on_update:
+#   - lambda: |-
+#       for (auto touch: touches)  {
+#           if (touch.state <= 2) {
+#             ESP_LOGI("Touch points:", "id=%d x=%d, y=%d x.raw=%d, y.raw=%d", touch.id, touch.x, touch.y, touch.x_raw, touch.y_raw);
+#           }
+#       }
+
+# -------------------------------------------
+# Display
+# -------------------------------------------
+display:
+  - platform: mipi_rgb
+    model: RPI
+    id: my_display
+    update_interval: never
+    auto_clear_enabled: false
+    color_order: RGB
+    byte_order: little_endian
+    pclk_frequency: 30MHZ
+    dimensions:
+      width: 1024
+      height: 600
+    de_pin:
+      number: 5
+    hsync_pin:
+      number: 46
+      ignore_strapping_warning: true
+    vsync_pin:
+      number: 3
+      ignore_strapping_warning: true
+    pclk_pin: 7
+    pclk_inverted: true
+    reset_pin:
+      waveshare_io_ch32v003: wave_io
+      number: 3
+    hsync_back_porch: 152
+    hsync_front_porch: 48
+    hsync_pulse_width: 162
+    vsync_back_porch: 13
+    vsync_front_porch: 3
+    vsync_pulse_width: 45
+    data_pins:
+      red:
+        - 1  # r3
+        - 2  # r4
+        - 42  # r5
+        - 41  # r6
+        - 40  # r7
+      blue:
+        - 14  # b3
+        - 38  # b4
+        - 18  # b5
+        - 17  # b6
+        - 10  # b7
+      green:
+        - 39  # g2
+        - 0  # g3
+        - 45  # g4
+        - 48  # g5
+        - 47  # g6
+        - 21  # g7
+
+# Special LVGL settings required for this display
+lvgl:
+  rotation: ${rotation | default("0")}
+  buffer_size: 25%

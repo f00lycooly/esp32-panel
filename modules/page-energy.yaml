@@ -1,0 +1,884 @@
+# page-energy.yaml — Energy FUNCTION (F3) package for the panel.
+# Included as a package by waveshare-p4-86-panel.yaml.
+#
+# Owns TWO swipe pages in the 2D nav:
+#   F3 P0  energy_page — "Now" live power-flow. Central Home node with five
+#          connected nodes: Solar / Battery(+SOC) / Grid(import|export) /
+#          EV(violet) / Heat-Pump(orange). Directional arrows + live kW per link
+#          (arrow direction follows the sign of each measure), plus a foot strip
+#          (Solcast remaining + EV state). Drawn on an lv_canvas (arrows/links)
+#          with LVGL widget nodes overlaid for crisp text.
+#   F3 P1  today_page — "Today" Sankey (UPGRADE of the old muddy  canvas).
+#          Gradient ribbons (source→sink colour blend, per-segment RGB lerp),
+#          tessellated bezier curves, lane-ordered with IN / OUT column headers.
+#          IN  = PV / Battery(discharge) / Grid(import)
+#          OUT = Home / EV / HeatPump / Battery(charge) / Export, each split by
+#          source. Reads the daily_flow_* utility-meters (E2 backend, contract §7).
+#
+# Top bar: the singleton bar (modules/top-bar.yaml, ) draws battery·clock·cog
+# on top_layer over BOTH pages — these pages draw NO top bar and keep content
+# below y=72 ($shell_content_y). The top bar reads pv_kw/home_kw (declared here)
+# and batt_kw (ui-shared) — those ids are PRESERVED below; do not rename them.
+#
+# Inverter sign conventions assumed: battery_power +charge / -discharge;
+# grid_active_power as seen here is small/ambiguous so we read the dedicated
+# grid_import_power (+) and grid_export_power (+) sensors instead.
+#
+# LVGL-honest (LVGL 9.6): canvas triangle fills for ribbons/arrows, label+MDI for
+# nodes. No SVG/CSS/blur. Decorative children clickable:false so swipes pass.
+
+# ── HA entity contract ──────────────────────────────
+# Every external HA entity this page reads is a substitution defined in
+# user-config.yaml, so a composition can rebind any of them without editing this
+# module (mirrors the page-climate.yaml contract). The energy system is house-wide,
+# so the defaults are usually inherited as-is; a panel on a different inverter/EV
+# overrides the relevant ids in its device file.
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoints. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_energy: !include capture/${capture_mode}/energy.yaml
+
+# NOTE: every en_* entity substitution consumed below is defined in
+# user-config.yaml (see user-config.yaml.example, Energy section) — this
+# module carries no site defaults.
+
+globals:
+  # True only while the "Now" page is loaded — gates that page's redraw interval.
+  - id: nowflow_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  # True only while the "Today" Sankey page is loaded — gates its redraw interval.
+  - id: sankey_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+# ───────────────────────── HA sensors ─────────────────────────
+sensor:
+  # ── Live node powers (kW) for the "Now" page ──
+  # pv_kw / home_kw are READ BY THE TOP BAR (top-bar.yaml) — keep these ids.
+  - platform: homeassistant
+    id: pv_kw            # solar generation, kW (>= 0)
+    entity_id: ${en_pv_power_entity}
+    internal: true
+  - platform: homeassistant
+    id: home_kw          # whole-house consumed power, kW (incl EV + HP)
+    entity_id: ${en_consumed_power_entity}
+    internal: true
+  # batt_kw (+charge / -discharge) and batt_soc (SOC %, node subtitle) live in
+  # ui-shared.yaml; read via id(batt_kw) / id(batt_soc).
+  - platform: homeassistant
+    id: grid_imp_kw      # grid import, kW (>= 0)
+    entity_id: ${en_grid_import_entity}
+    internal: true
+  - platform: homeassistant
+    id: grid_exp_kw      # grid export, kW (>= 0)
+    entity_id: ${en_grid_export_entity}
+    internal: true
+  - platform: homeassistant
+    id: ev_kw            # EV charge power (Easee), kW (>= 0)  — VIOLET link
+    entity_id: ${en_ev_power_entity}
+    internal: true
+  - platform: homeassistant
+    id: hp_kw            # heat-pump (SmartPort load 1), kW (>= 0) — ORANGE link
+    entity_id: ${en_hp_power_entity}
+    internal: true
+  - platform: homeassistant
+    id: solcast_remain   # Solcast remaining generation today, kWh (foot strip)
+    entity_id: ${en_solcast_remaining_entity}
+    internal: true
+  - platform: homeassistant
+    id: tesla_soc        # Tesla battery level, % (EV foot-strip state)
+    entity_id: ${en_tesla_soc_entity}
+    internal: true
+
+  # ── Daily flow-path totals (kWh) — drive the "Today" Sankey ──
+  # The existing 7-path daily meters (PV/Battery/Grid → Home/Battery/Grid). E2's
+  # contract re-interprets *_to_home as "all load incl EV+HP"; the panel subtracts
+  # the to_ev / to_hp splits below to recover the home-rest per source.
+  - platform: homeassistant
+    id: df_pvh
+    entity_id: ${en_df_pv_to_home_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_pvb
+    entity_id: ${en_df_pv_to_battery_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_pvg
+    entity_id: ${en_df_pv_to_grid_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_bh
+    entity_id: ${en_df_battery_to_home_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_bg
+    entity_id: ${en_df_battery_to_grid_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_gh
+    entity_id: ${en_df_grid_to_home_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_gb
+    entity_id: ${en_df_grid_to_battery_entity}
+    internal: true
+  # ── NEW daily EV/HP splits (E2 creates per contract §7) ──
+  # Until E2 lands these are unavailable → isnan → treated as 0 (graceful: Sankey
+  # just shows no EV/HP slices and Home-rest == full *_to_home).
+  - platform: homeassistant
+    id: df_pv_ev
+    entity_id: ${en_df_pv_to_ev_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_bat_ev
+    entity_id: ${en_df_battery_to_ev_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_grid_ev
+    entity_id: ${en_df_grid_to_ev_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_pv_hp
+    entity_id: ${en_df_pv_to_hp_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_bat_hp
+    entity_id: ${en_df_battery_to_hp_entity}
+    internal: true
+  - platform: homeassistant
+    id: df_grid_hp
+    entity_id: ${en_df_grid_to_hp_entity}
+    internal: true
+
+# ───────────────────────── EV charge state (text) ─────────────────────────
+text_sensor:
+  - platform: homeassistant
+    id: ev_status        # Easee status: charging / disconnected / awaiting…
+    entity_id: ${en_ev_status_entity}
+    internal: true
+  - platform: homeassistant
+    id: tesla_at_home    # device_tracker: home / not_home
+    entity_id: ${en_tesla_location_entity}
+    internal: true
+
+# ───────────────────────── page-local fonts ─────────────────────────
+# Every $mdi_* used on THESE pages is declared here (contract rule). Node glyphs
+# at 40px; foot-strip glyphs at 28px.
+font:
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_energy_40
+    size: 40
+    bpp: 4
+    glyphs:
+      - $mdi_weather_sunny              # Solar node
+      - $mdi_home                       # Home node
+      - $mdi_battery_high               # Battery node
+      - $mdi_transmission_tower_import  # Grid node, importing
+      - $mdi_transmission_tower_export  # Grid node, exporting
+      - $mdi_transmission_tower         # Grid node, idle
+      - $mdi_car_electric               # EV node
+      - $mdi_heat_pump                  # Heat-pump node
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_energy_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_solar_power                # foot strip: Solcast remaining
+      - $mdi_car_electric               # foot strip: EV state
+      - $mdi_heat_pump                  # foot strip (Today): HP daily
+      - $mdi_leaf                       # foot strip (Today): self-sufficiency
+  # Today-Sankey lane-bar glyphs: one per IN/OUT lane, centred inside its colour
+  # bar (replaces the old text name labels). Source glyphs at 30px.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_bar_30
+    size: 30
+    bpp: 4
+    glyphs:
+      - $mdi_weather_sunny              # IN: Solar
+      - $mdi_battery_high               # IN: Battery discharge / OUT: Battery charge
+      - $mdi_transmission_tower_import  # IN: Grid import
+      - $mdi_home                       # OUT: Home
+      - $mdi_car_electric               # OUT: EV
+      - $mdi_heat_pump                  # OUT: Heat Pump
+      - $mdi_transmission_tower_export  # OUT: Export
+
+# ───────────────────────── draw scripts ─────────────────────────
+script:
+  # ════════════════ "Now" live power-flow (.1) ════════════════
+  # Reads the live node powers, paints directional arrows on the canvas (one per
+  # active link, coloured by source/sink), and updates the six node value labels
+  # + foot strip. Home is the central node = consumed − EV − HP residual.
+  - id: refresh_nowflow
+    then:
+      - lambda: |-
+          // ── live powers (kW) ──
+          float pv   = fmaxf(id(pv_kw).has_state()   ? id(pv_kw).state   : 0.0f, 0.0f);
+          float load = fmaxf(id(home_kw).has_state() ? id(home_kw).state : 0.0f, 0.0f);
+          float bat  = (id(batt_kw).has_state() && !std::isnan(id(batt_kw).state))
+                         ? id(batt_kw).state : 0.0f;  // +chg / -dis (NaN → 0)
+          float gimp = fmaxf(id(grid_imp_kw).has_state() ? id(grid_imp_kw).state : 0.0f, 0.0f);
+          float gexp = fmaxf(id(grid_exp_kw).has_state() ? id(grid_exp_kw).state : 0.0f, 0.0f);
+          float ev   = fmaxf(id(ev_kw).has_state() ? id(ev_kw).state : 0.0f, 0.0f);
+          float hp   = fmaxf(id(hp_kw).has_state() ? id(hp_kw).state : 0.0f, 0.0f);
+          // 3kn: has_state() stays true when the entity goes unavailable (state=NaN);
+          // (int)lroundf(NaN) yields INT_MAX → "2147483647%". Guard NaN + 0..100 range.
+          int   soc  = (id(batt_soc).has_state() && std::isfinite(id(batt_soc).state)
+                        && id(batt_soc).state >= 0.0f && id(batt_soc).state <= 100.0f)
+                         ? (int)lroundf(id(batt_soc).state) : -1;
+          float net_grid = gimp - gexp;               // + import / - export
+          float home_rest = fmaxf(load - ev - hp, 0.0f);  // Home node = load less EV/HP
+
+          // ── canvas: dark wash, then arrows. Canvas sits at screen y=72. ──
+          lv_obj_t* cv = id(nowflow_canvas);
+          lv_canvas_fill_bg(cv, lv_color_hex(0x0D0D0D), LV_OPA_COVER);
+          lv_layer_t layer;
+          lv_canvas_init_layer(cv, &layer);
+
+          // Node centres in CANVAS-LOCAL coords (canvas origin = screen 0,72).
+          // Mockup positions minus the 72 top-bar offset. Home centred.
+          const float HOME_X = 360, HOME_Y = 250;     // central
+          const float SOL_X  = 360, SOL_Y  = 90;      // top
+          const float BAT_X  = 102, BAT_Y  = 250;     // left
+          const float GRID_X = 618, GRID_Y = 250;     // right
+          const float EV_X   = 226, EV_Y   = 410;     // lower-left
+          const float HP_X   = 494, HP_Y   = 410;     // lower-right
+
+          // ── arrow: a tapered triangle "stem" + arrowhead from a→b. Drawn as
+          //    filled triangles so there are no round caps and no stroke API. The
+          //    stem is a thin quad; the head a wedge. Direction = a→b. ──
+          auto seg = [&](float ax, float ay, float bx, float by, uint32_t color, float w) {
+            float dx = bx - ax, dy = by - ay;
+            float len = sqrtf(dx*dx + dy*dy);
+            if (len < 1.0f) return;
+            float ux = dx/len, uy = dy/len;           // unit along
+            float nx = -uy, ny = ux;                  // unit normal
+            float head = 22.0f;                       // arrowhead length
+            float bodyL = fmaxf(len - head, 1.0f);    // stem length
+            float sx = ax + ux*bodyL, sy = ay + uy*bodyL;  // stem→head join
+            lv_draw_triangle_dsc_t td; lv_draw_triangle_dsc_init(&td);
+            td.color = lv_color_hex(color); td.opa = LV_OPA_COVER;
+            float hw = w*0.5f;
+            // stem quad (a±n) → (s±n) as two triangles
+            td.p[0].x = ax + nx*hw; td.p[0].y = ay + ny*hw;
+            td.p[1].x = ax - nx*hw; td.p[1].y = ay - ny*hw;
+            td.p[2].x = sx + nx*hw; td.p[2].y = sy + ny*hw;
+            lv_draw_triangle(&layer, &td);
+            td.p[0].x = ax - nx*hw; td.p[0].y = ay - ny*hw;
+            td.p[1].x = sx - nx*hw; td.p[1].y = sy - ny*hw;
+            td.p[2].x = sx + nx*hw; td.p[2].y = sy + ny*hw;
+            lv_draw_triangle(&layer, &td);
+            // arrowhead wedge: base (s ± n*hw*2) → tip (b)
+            float hb = hw*2.2f;
+            td.p[0].x = sx + nx*hb; td.p[0].y = sy + ny*hb;
+            td.p[1].x = sx - nx*hb; td.p[1].y = sy - ny*hb;
+            td.p[2].x = bx;         td.p[2].y = by;
+            lv_draw_triangle(&layer, &td);
+          };
+
+          // helper: draw a link from node edge to node edge, shrinking the
+          // endpoints toward the centres so arrows don't bury under the cards.
+          const float R = 80.0f;   // half node footprint to clear
+          auto link = [&](float ax, float ay, float bx, float by, uint32_t col, float val) {
+            if (val < 0.05f) return;
+            float dx = bx-ax, dy = by-ay; float l = sqrtf(dx*dx+dy*dy);
+            if (l < 1.0f) return;
+            float ux=dx/l, uy=dy/l;
+            seg(ax+ux*R, ay+uy*R, bx-ux*R, by-uy*R, col, 9.0f);
+          };
+
+          // Source colours: solar yellow, battery green, grid blue, EV violet,
+          // HP orange. Arrow direction follows the physical flow sign.
+          const uint32_t C_SOL=0xE7C12C, C_BAT=0x5CA848, C_GRID=0x4C9FFF,
+                         C_EV=0x926BC7, C_HP=0xF07C40;
+
+          // Solar → Home (solar always feeds home/grid; show whenever pv>0)
+          link(SOL_X, SOL_Y, HOME_X, HOME_Y, C_SOL, pv);
+          // Battery ↔ Home: discharge(bat<0) → home; charge(bat>0) home→battery
+          if (bat < -0.05f) link(BAT_X, BAT_Y, HOME_X, HOME_Y, C_BAT, -bat);
+          else if (bat > 0.05f) link(HOME_X, HOME_Y, BAT_X, BAT_Y, C_BAT, bat);
+          // Grid ↔ Home: import → home; export home→grid
+          if (gimp > 0.05f) link(GRID_X, GRID_Y, HOME_X, HOME_Y, C_GRID, gimp);
+          if (gexp > 0.05f) link(HOME_X, HOME_Y, GRID_X, GRID_Y, C_GRID, gexp);
+          // Home → EV / Home → HP (always sinks)
+          link(HOME_X, HOME_Y, EV_X, EV_Y, C_EV, ev);
+          link(HOME_X, HOME_Y, HP_X, HP_Y, C_HP, hp);
+
+          lv_canvas_finish_layer(cv, &layer);
+
+          // ── node value labels (widgets sit at screen coords; canvas y-offset 72) ──
+          char b[24];
+          snprintf(b, sizeof(b), "%.2f kW", pv);   lv_label_set_text(id(nf_solar_v), b);
+          snprintf(b, sizeof(b), "%.2f kW", home_rest); lv_label_set_text(id(nf_home_v), b);
+          // Battery: magnitude + direction word + SOC
+          {
+            float mag = fabsf(bat);
+            const char* dir = (bat > 0.05f) ? "IN" : (bat < -0.05f ? "OUT" : "IDLE");
+            snprintf(b, sizeof(b), "%.2f kW", mag);
+            lv_label_set_text(id(nf_batt_v), b);
+            char s[24];  // "BATT · IDLE · 100%" is 20 bytes (· = 2) — 20 truncated the %
+            if (soc >= 0) snprintf(s, sizeof(s), "BATT · %s · %d%%", dir, soc);
+            else          snprintf(s, sizeof(s), "BATT · %s", dir);
+            lv_label_set_text(id(nf_batt_l), s);
+          }
+          // Grid: show whichever side is active
+          {
+            float gmag = fabsf(net_grid);
+            snprintf(b, sizeof(b), "%.2f kW", gmag);
+            lv_label_set_text(id(nf_grid_v), b);
+            const char* gl;
+            if (net_grid > 0.05f) gl = "$mdi_transmission_tower_import";
+            else if (net_grid < -0.05f) gl = "$mdi_transmission_tower_export";
+            else gl = "$mdi_transmission_tower";
+            lv_label_set_text(id(nf_grid_ic), gl);
+            lv_label_set_text(id(nf_grid_l),
+              net_grid > 0.05f ? "GRID · IN" : (net_grid < -0.05f ? "GRID · OUT" : "GRID"));
+          }
+          snprintf(b, sizeof(b), "%.2f kW", ev);   lv_label_set_text(id(nf_ev_v), b);
+          snprintf(b, sizeof(b), "%.2f kW", hp);   lv_label_set_text(id(nf_hp_v), b);
+
+          // ── idle-tile de-emphasis: near-zero tiles drop their border to 40%
+          //    and their value label to gray500 so active flows carry the
+          //    visual weight; restored to full border + white when active. ──
+          auto tile_dim = [](lv_obj_t* tile, lv_obj_t* val, bool idle) {
+            lv_obj_set_style_border_opa(tile, idle ? LV_OPA_40 : LV_OPA_COVER, 0);
+            lv_obj_set_style_text_color(val, lv_color_hex(idle ? 0x9E9E9E : 0xF2F0EB), 0);
+          };
+          tile_dim(id(nf_solar), id(nf_solar_v), pv < 0.05f);
+          tile_dim(id(nf_batt),  id(nf_batt_v),  fabsf(bat) < 0.05f);
+          tile_dim(id(nf_grid),  id(nf_grid_v),  fabsf(net_grid) < 0.05f);
+          tile_dim(id(nf_ev),    id(nf_ev_v),    ev < 0.05f);
+          tile_dim(id(nf_hp),    id(nf_hp_v),    hp < 0.05f);
+
+          // ── foot strip: Solcast remaining + EV state ──
+          {
+            char f[28];
+            if (id(solcast_remain).has_state() && !std::isnan(id(solcast_remain).state))
+              snprintf(f, sizeof(f), "%.1f kWh left", id(solcast_remain).state);
+            else
+              snprintf(f, sizeof(f), "—");   // unavailable → em-dash, not "nan"
+            lv_label_set_text(id(nf_foot_solcast), f);
+
+            std::string st = id(ev_status).has_state() ? id(ev_status).state : "";
+            bool home = id(tesla_at_home).has_state() && id(tesla_at_home).state == "home";
+            // 3kn: guard NaN (unavailable Tesla SOC) + 0..100 so we never print INT_MAX%.
+            int  tsoc = (id(tesla_soc).has_state() && std::isfinite(id(tesla_soc).state)
+                         && id(tesla_soc).state >= 0.0f && id(tesla_soc).state <= 100.0f)
+                          ? (int)lroundf(id(tesla_soc).state) : -1;
+            char e[40];
+            const char* word = "idle";
+            if (st == "charging") word = "charging";
+            else if (st == "disconnected") word = home ? "home · unplugged" : "away";
+            else if (!st.empty()) word = st.c_str();
+            if (tsoc >= 0) snprintf(e, sizeof(e), "%d%% · %s", tsoc, word);
+            else           snprintf(e, sizeof(e), "%s", word);
+            lv_label_set_text(id(nf_foot_ev), e);
+          }
+
+  # ════════════════ "Today" Sankey (.2 — gradient upgrade) ════════════════
+  # Lane-ordered gradient ribbons. Each ribbon is a filled band between two cubic
+  # béziers, tessellated into triangle quads; per-segment colour is lerped from
+  # the SOURCE colour to the SINK colour (smooth source→sink blend with flat
+  # triangles — the  muddy look came from single-colour-by-source bands).
+  - id: refresh_sankey
+    then:
+      - lambda: |-
+          // ── gather daily totals (kWh); NaN → 0 (E2 EV/HP meters may be absent) ──
+          auto g = [](sensor::Sensor* s){ return (s->has_state() && !isnan(s->state)) ? s->state : 0.0f; };
+          float pvh_all = g(id(df_pvh)),  pvb = g(id(df_pvb)),  pvg = g(id(df_pvg));
+          float bh_all  = g(id(df_bh)),   bg  = g(id(df_bg));
+          float gh_all  = g(id(df_gh)),   gb  = g(id(df_gb));
+          float pv_ev = g(id(df_pv_ev)),  bat_ev = g(id(df_bat_ev)),  grid_ev = g(id(df_grid_ev));
+          float pv_hp = g(id(df_pv_hp)),  bat_hp = g(id(df_bat_hp)),  grid_hp = g(id(df_grid_hp));
+
+          // Home-rest per source = *_to_home − to_ev − to_hp (computed on-panel).
+          float pv_home  = fmaxf(pvh_all - pv_ev  - pv_hp,  0.0f);
+          float bat_home = fmaxf(bh_all  - bat_ev - bat_hp, 0.0f);
+          float grid_home= fmaxf(gh_all  - grid_ev- grid_hp,0.0f);
+
+          // IN lane totals (sources): PV / Battery-discharge / Grid-import
+          float in_pv   = pv_home + pvb + pvg + pv_ev + pv_hp;     // = pvh_all + pvb + pvg
+          float in_bat  = bat_home + bg + bat_ev + bat_hp;         // discharge side
+          float in_grid = grid_home + gb + grid_ev + grid_hp;      // import side
+          // OUT lane totals (sinks): Home / EV / HP / Battery-charge / Export
+          float out_home = pv_home + bat_home + grid_home;
+          float out_ev   = pv_ev + bat_ev + grid_ev;
+          float out_hp   = pv_hp + bat_hp + grid_hp;
+          float out_bchg = pvb + gb;                               // charge into battery
+          float out_exp  = pvg + bg;                               // export
+
+          // ── geometry: canvas is 720×456 at screen y=120 (below IN/OUT headers,
+          //    above the 72px foot strip). Left/right body height each normalised
+          //    to its own lane total so ribbon ends tile exactly. ──
+          // xfh: ribbon span compressed inward (X0/X3) to clear side gutters for
+          // the widened lane bars + their centred glyph/value labels.
+          const float X0 = 142, X3 = 578, XC = 360;    // ribbon start/end + control x
+          const float BW = 56.0f;                      // lane-bar width (was 12)
+          const float IN_BAR_X  = X0 - 14 - BW;         // left bar  x (≈ 72)
+          const float OUT_BAR_X = X3 + 14;              // right bar x (≈ 592)
+          const float T = 8, GAP = 12;                 // top margin + inter-lane gap
+          const float H = 456.0f;
+          const float H_IN  = H - 2*T - 2*GAP;         // 3 IN lanes → 2 gaps
+          const float H_OUT = H - 2*T - 4*GAP;         // 5 OUT lanes → 4 gaps
+          float inTot  = fmaxf(in_pv + in_bat + in_grid, 0.1f);
+          float outTot = fmaxf(out_home + out_ev + out_hp + out_bchg + out_exp, 0.1f);
+          float lsc = H_IN  / inTot;                   // left  px-per-kWh
+          float rsc = H_OUT / outTot;                  // right px-per-kWh
+
+          // IN lane tops (stack top→bottom)
+          float h_in_pv  = in_pv*lsc,  h_in_bat = in_bat*lsc, h_in_grid = in_grid*lsc;
+          float top_in_pv  = T;
+          float top_in_bat = top_in_pv  + h_in_pv  + GAP;
+          float top_in_grid= top_in_bat + h_in_bat + GAP;
+          // OUT lane tops
+          float h_o_home=out_home*rsc, h_o_ev=out_ev*rsc, h_o_hp=out_hp*rsc,
+                h_o_bchg=out_bchg*rsc, h_o_exp=out_exp*rsc;
+          float top_o_home = T;
+          float top_o_ev   = top_o_home + h_o_home + GAP;
+          float top_o_hp   = top_o_ev   + h_o_ev   + GAP;
+          float top_o_bchg = top_o_hp   + h_o_hp   + GAP;
+          float top_o_exp  = top_o_bchg + h_o_bchg + GAP;
+
+          // ribbon stacking cursors (advance as flows are laid into each lane)
+          float c_in_pv=top_in_pv, c_in_bat=top_in_bat, c_in_grid=top_in_grid;
+          float c_o_home=top_o_home, c_o_ev=top_o_ev, c_o_hp=top_o_hp,
+                c_o_bchg=top_o_bchg, c_o_exp=top_o_exp;
+
+          lv_obj_t* cv = id(sankey_canvas);
+          lv_canvas_fill_bg(cv, lv_color_hex(0x0D0D0D), LV_OPA_COVER);
+          lv_layer_t layer;
+          lv_canvas_init_layer(cv, &layer);
+
+          // per-channel lerp between two 0xRRGGBB colours at fraction t∈[0,1]
+          auto lerp = [](uint32_t a, uint32_t b, float t) -> uint32_t {
+            int ar=(a>>16)&0xFF, ag=(a>>8)&0xFF, ab=a&0xFF;
+            int br=(b>>16)&0xFF, bg2=(b>>8)&0xFF, bb=b&0xFF;
+            int r=(int)(ar+(br-ar)*t), gg=(int)(ag+(bg2-ag)*t), bl=(int)(ab+(bb-ab)*t);
+            return (r<<16)|(gg<<8)|bl;
+          };
+
+          // ── gradient ribbon: filled band between two cubic béziers, tessellated
+          //    into N triangle quads, each quad flat-filled with the source→sink
+          //    lerped colour at its midpoint t. Source width uses the left scale,
+          //    sink width the right scale, so node edges tile exactly. ──
+          auto ribbon = [&](float &ys, float &yd, float val, uint32_t csrc, uint32_t csnk) {
+            if (val <= 0.02f) return;
+            float ws = val*lsc, wd = val*rsc;
+            float yt0 = ys,      yt3 = yd;
+            float yb0 = ys + ws, yb3 = yd + wd;
+            lv_draw_triangle_dsc_t td; lv_draw_triangle_dsc_init(&td);
+            td.opa = LV_OPA_70;
+            const int N = 22;
+            float pxx = X0, ptop = yt0, pbot = yb0;
+            for (int i = 1; i <= N; i++) {
+              float t = (float)i / N, u = 1.0f - t;
+              float bx = u*u*u*X0  + 3*u*u*t*XC  + 3*u*t*t*XC  + t*t*t*X3;
+              float ct = u*u*u*yt0 + 3*u*u*t*yt0 + 3*u*t*t*yt3 + t*t*t*yt3;
+              float cb = u*u*u*yb0 + 3*u*u*t*yb0 + 3*u*t*t*yb3 + t*t*t*yb3;
+              float tm = (t + (t - 1.0f/N)) * 0.5f;   // segment midpoint fraction
+              td.color = lv_color_hex(lerp(csrc, csnk, tm));
+              td.p[0].x = pxx; td.p[0].y = ptop; td.p[1].x = bx; td.p[1].y = ct; td.p[2].x = bx;  td.p[2].y = cb;
+              lv_draw_triangle(&layer, &td);
+              td.p[0].x = pxx; td.p[0].y = ptop; td.p[1].x = bx; td.p[1].y = cb; td.p[2].x = pxx; td.p[2].y = pbot;
+              lv_draw_triangle(&layer, &td);
+              pxx = bx; ptop = ct; pbot = cb;
+            }
+            ys += ws; yd += wd;
+          };
+
+          // colours
+          const uint32_t C_PV=0xE7C12C, C_BAT=0x5CA848, C_GRID=0x4C9FFF,
+                         C_HOME=0xCFD2D6, C_EV=0x926BC7, C_HP=0xF07C40, C_EXP=0x4C9FFF;
+
+          // ── draw order = OUT-lane stacking order (Home, EV, HP, Battery, Export),
+          //    iterating sources within each so IN lanes also stack consistently. ──
+          // OUT: Home (from PV / Battery / Grid)
+          ribbon(c_in_pv,   c_o_home, pv_home,  C_PV,   C_HOME);
+          ribbon(c_in_bat,  c_o_home, bat_home, C_BAT,  C_HOME);
+          ribbon(c_in_grid, c_o_home, grid_home,C_GRID, C_HOME);
+          // OUT: EV
+          ribbon(c_in_pv,   c_o_ev,   pv_ev,    C_PV,   C_EV);
+          ribbon(c_in_bat,  c_o_ev,   bat_ev,   C_BAT,  C_EV);
+          ribbon(c_in_grid, c_o_ev,   grid_ev,  C_GRID, C_EV);
+          // OUT: Heat Pump
+          ribbon(c_in_pv,   c_o_hp,   pv_hp,    C_PV,   C_HP);
+          ribbon(c_in_bat,  c_o_hp,   bat_hp,   C_BAT,  C_HP);
+          ribbon(c_in_grid, c_o_hp,   grid_hp,  C_GRID, C_HP);
+          // OUT: Battery charge (from PV / Grid)
+          ribbon(c_in_pv,   c_o_bchg, pvb,      C_PV,   C_BAT);
+          ribbon(c_in_grid, c_o_bchg, gb,       C_GRID, C_BAT);
+          // OUT: Export (from PV / Battery)
+          ribbon(c_in_pv,   c_o_exp,  pvg,      C_PV,   C_EXP);
+          ribbon(c_in_bat,  c_o_exp,  bg,       C_BAT,  C_EXP);
+
+          // ── IN / OUT lane bars: a wide rounded coloured bar at each lane edge,
+          //    sized to its flow. The source glyph + value are overlaid (LVGL
+          //    labels, below) centred on each bar. ──
+          auto cap = [&](float x, float top, float h, uint32_t col) {
+            if (h < 3.0f) h = 3.0f;
+            lv_draw_rect_dsc_t rd; lv_draw_rect_dsc_init(&rd);
+            rd.bg_color = lv_color_hex(col); rd.bg_opa = LV_OPA_COVER; rd.radius = 10;
+            lv_area_t a; a.x1=(int32_t)x; a.y1=(int32_t)top; a.x2=(int32_t)(x+BW); a.y2=(int32_t)(top+h);
+            lv_draw_rect(&layer, &rd, &a);
+          };
+          cap(IN_BAR_X,  top_in_pv,  h_in_pv,  C_PV);
+          cap(IN_BAR_X,  top_in_bat, h_in_bat, C_BAT);
+          cap(IN_BAR_X,  top_in_grid,h_in_grid,C_GRID);
+          cap(OUT_BAR_X, top_o_home, h_o_home, C_HOME);
+          cap(OUT_BAR_X, top_o_ev,   h_o_ev,   C_EV);
+          cap(OUT_BAR_X, top_o_hp,   h_o_hp,   C_HP);
+          cap(OUT_BAR_X, top_o_bchg, h_o_bchg, C_BAT);
+          cap(OUT_BAR_X, top_o_exp,  h_o_exp,  C_EXP);
+
+          lv_canvas_finish_layer(cv, &layer);
+
+          // ── lane bars: source glyph centred in the bar, value (kWh) beneath it
+          //    (xfh — replaces the old text name labels that overlapped the
+          //    ribbons). Each label is BW-wide + centre-aligned, so set_pos x =
+          //    bar x centres glyph/value on the bar. Graceful degradation by lane
+          //    height: tall lanes show glyph+value; mid lanes show glyph only;
+          //    near-zero lanes (e.g. EV 0.0) blank both so they never collide. ──
+          char bf[16];
+          auto place = [&](lv_obj_t* g, lv_obj_t* v, const char* gl,
+                           float barx, float top, float h, float val) {
+            float cy = 120.0f + top + h/2.0f;          // lane vertical centre (screen)
+            if (h < 22.0f) { lv_label_set_text(g, ""); lv_label_set_text(v, ""); return; }
+            lv_label_set_text(g, gl);
+            bool wide = h >= 44.0f;                     // room for glyph + value stacked
+            lv_obj_set_pos(g, (int)barx, (int)(cy - (wide ? 30.0f : 19.0f)));
+            if (wide) {
+              snprintf(bf, sizeof(bf), "%.1f", val);
+              lv_label_set_text(v, bf);
+              lv_obj_set_pos(v, (int)barx, (int)(cy + 4.0f));
+            } else {
+              lv_label_set_text(v, "");
+            }
+          };
+          place(id(sk_in_pv_g),   id(sk_in_pv),   "$mdi_weather_sunny",             IN_BAR_X,  top_in_pv,  h_in_pv,  in_pv);
+          place(id(sk_in_bat_g),  id(sk_in_bat),  "$mdi_battery_high",              IN_BAR_X,  top_in_bat, h_in_bat, in_bat);
+          place(id(sk_in_grid_g), id(sk_in_grid), "$mdi_transmission_tower_import", IN_BAR_X,  top_in_grid,h_in_grid,in_grid);
+          place(id(sk_o_home_g),  id(sk_o_home),  "$mdi_home",                      OUT_BAR_X, top_o_home, h_o_home, out_home);
+          place(id(sk_o_ev_g),    id(sk_o_ev),    "$mdi_car_electric",              OUT_BAR_X, top_o_ev,   h_o_ev,   out_ev);
+          place(id(sk_o_hp_g),    id(sk_o_hp),    "$mdi_heat_pump",                 OUT_BAR_X, top_o_hp,   h_o_hp,   out_hp);
+          place(id(sk_o_bchg_g),  id(sk_o_bchg),  "$mdi_battery_high",              OUT_BAR_X, top_o_bchg, h_o_bchg, out_bchg);
+          place(id(sk_o_exp_g),   id(sk_o_exp),   "$mdi_transmission_tower_export", OUT_BAR_X, top_o_exp,  h_o_exp,  out_exp);
+
+          // ── foot strip: EV kWh / HP kWh / self-sufficiency % ──
+          {
+            char f[24];
+            snprintf(f, sizeof(f), "%.1f kWh EV", out_ev); lv_label_set_text(id(sk_foot_ev), f);
+            snprintf(f, sizeof(f), "%.1f kWh HP", out_hp); lv_label_set_text(id(sk_foot_hp), f);
+            // self-sufficiency = (home served by PV+Battery) / total home
+            float self_home = pv_home + bat_home;
+            int pct = out_home > 0.05f ? (int)lroundf(100.0f * self_home / out_home) : 0;
+            snprintf(f, sizeof(f), "%d%% self", pct); lv_label_set_text(id(sk_foot_self), f);
+          }
+
+interval:
+  # Repaint each page only while it is showing (cheap; a handful of draw ops).
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(nowflow_active);'
+          then:
+            - script.execute: refresh_nowflow
+      - if:
+          condition:
+            lambda: 'return id(sankey_active);'
+          then:
+            - script.execute: refresh_sankey
+
+# ───────────────────────── LVGL pages ─────────────────────────
+lvgl:
+  pages:
+    # ═══════════════ F3 P0 — ENERGY · Now power-flow (.1) ═══════════════
+    - id: energy_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: 3, p: 0}   # ENERGY · page 0
+        - lambda: 'id(nowflow_active) = true;'
+        - script.execute: refresh_nowflow
+      on_unload:
+        - lambda: 'id(nowflow_active) = false;'
+      widgets:
+        # Drawing surface for arrows/links — clickable:false so swipes pass.
+        # Canvas at screen y=72 (below the singleton top bar), height 504 to leave
+        # the 72px foot strip at the bottom. RGB565 720×504×2 ≈ 726 KB PSRAM.
+        - canvas:
+            id: nowflow_canvas
+            x: 0
+            y: 72
+            width: 720
+            height: 504
+            clickable: false
+
+        # ── Five satellite nodes + central Home. Cards are non-clickable decorative
+        #    obj's; the value/label/icon are repainted by refresh_nowflow. ──
+        # SOLAR (top, yellow)
+        - obj:
+            id: nf_solar
+            clickable: false
+            x: 284
+            y: 90
+            width: 152
+            height: 104
+            bg_color: 0x14161B
+            bg_opa: cover
+            radius: 18
+            border_width: 2
+            border_color: yellow
+            pad_all: 6
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 1}
+            widgets:
+              - label: {clickable: false, text: $mdi_weather_sunny, text_font: mdi_energy_40, text_color: yellow}
+              - label: {id: nf_solar_v, clickable: false, width: 100%, text_align: CENTER, text: "0.00 kW", text_font: oswald_24, text_color: white}
+              - label: {clickable: false, width: 100%, text_align: CENTER, text: "SOLAR", text_font: oswald_14, text_color: gray500}
+        # HOME (centre)
+        - obj:
+            id: nf_home
+            clickable: false
+            x: 284
+            y: 250
+            width: 152
+            height: 116
+            bg_color: 0x14161B
+            bg_opa: cover
+            radius: 18
+            border_width: 2
+            border_color: gray500
+            pad_all: 6
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 1}
+            widgets:
+              - label: {clickable: false, text: $mdi_home, text_font: mdi_energy_40, text_color: gray400}
+              - label: {id: nf_home_v, clickable: false, width: 100%, text_align: CENTER, text: "0.00 kW", text_font: oswald_36, text_color: white}
+              - label: {clickable: false, width: 100%, text_align: CENTER, text: "HOME", text_font: oswald_14, text_color: gray500}
+        # BATTERY (left, green)
+        - obj:
+            id: nf_batt
+            clickable: false
+            x: 26
+            y: 256
+            width: 152
+            height: 104
+            bg_color: 0x14161B
+            bg_opa: cover
+            radius: 18
+            border_width: 2
+            border_color: green
+            pad_all: 6
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 1}
+            widgets:
+              - label: {clickable: false, text: $mdi_battery_high, text_font: mdi_energy_40, text_color: green}
+              - label: {id: nf_batt_v, clickable: false, width: 100%, text_align: CENTER, text: "0.00 kW", text_font: oswald_24, text_color: white}
+              - label: {id: nf_batt_l, clickable: false, width: 100%, text_align: CENTER, text: "BATT", text_font: oswald_14, text_color: gray500}
+        # GRID (right, blue)
+        - obj:
+            id: nf_grid
+            clickable: false
+            x: 542
+            y: 256
+            width: 152
+            height: 104
+            bg_color: 0x14161B
+            bg_opa: cover
+            radius: 18
+            border_width: 2
+            border_color: blue
+            pad_all: 6
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 1}
+            widgets:
+              - label: {id: nf_grid_ic, clickable: false, text: $mdi_transmission_tower, text_font: mdi_energy_40, text_color: blue}
+              - label: {id: nf_grid_v, clickable: false, width: 100%, text_align: CENTER, text: "0.00 kW", text_font: oswald_24, text_color: white}
+              - label: {id: nf_grid_l, clickable: false, width: 100%, text_align: CENTER, text: "GRID", text_font: oswald_14, text_color: gray500}
+        # EV (lower-left, violet)
+        - obj:
+            id: nf_ev
+            clickable: false
+            x: 150
+            y: 440
+            width: 152
+            height: 104
+            bg_color: 0x14161B
+            bg_opa: cover
+            radius: 18
+            border_width: 2
+            border_color: violet
+            pad_all: 6
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 1}
+            widgets:
+              - label: {clickable: false, text: $mdi_car_electric, text_font: mdi_energy_40, text_color: violet}
+              - label: {id: nf_ev_v, clickable: false, width: 100%, text_align: CENTER, text: "0.00 kW", text_font: oswald_24, text_color: white}
+              - label: {clickable: false, width: 100%, text_align: CENTER, text: "EV · EASEE", text_font: oswald_14, text_color: gray500}
+        # HEAT PUMP (lower-right, orange)
+        - obj:
+            id: nf_hp
+            clickable: false
+            x: 418
+            y: 440
+            width: 152
+            height: 104
+            bg_color: 0x14161B
+            bg_opa: cover
+            radius: 18
+            border_width: 2
+            border_color: orange
+            pad_all: 6
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 1}
+            widgets:
+              - label: {clickable: false, text: $mdi_heat_pump, text_font: mdi_energy_40, text_color: orange}
+              - label: {id: nf_hp_v, clickable: false, width: 100%, text_align: CENTER, text: "0.00 kW", text_font: oswald_24, text_color: white}
+              - label: {clickable: false, width: 100%, text_align: CENTER, text: "HEAT PUMP", text_font: oswald_14, text_color: gray500}
+
+        # ── Foot strip: Solcast remaining + EV state (bottom 72px) ──
+        - obj:
+            id: nf_foot
+            clickable: false
+            align: BOTTOM_MID
+            y: 0
+            width: 720
+            height: 72
+            bg_color: 0x101216
+            bg_opa: cover
+            border_width: 0
+            radius: 0
+            pad_all: 0
+            scrollable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_EVENLY, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  clickable: false
+                  width: 340
+                  height: 60
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_solar_power, text_font: mdi_energy_28, text_color: yellow}
+                    - label: {id: nf_foot_solcast, clickable: false, text: "0.0 kWh left", text_font: oswald_24, text_color: white}
+              - obj:
+                  clickable: false
+                  width: 340
+                  height: 60
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_car_electric, text_font: mdi_energy_28, text_color: violet}
+                    - label: {id: nf_foot_ev, clickable: false, text: "—", text_font: oswald_24, text_color: white}
+
+    # ═══════════════ F3 P1 — ENERGY · Today Sankey (.2) ═══════════════
+    - id: today_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: 3, p: 1}   # ENERGY · page 1
+        - lambda: 'id(sankey_active) = true;'
+        - script.execute: refresh_sankey
+      on_unload:
+        - lambda: 'id(sankey_active) = false;'
+      widgets:
+        # IN / OUT column headers (just below the singleton top bar, y 72-120).
+        - label: {clickable: false, align: TOP_LEFT,  x: 30,  y: 96, text: "IN",  text_font: oswald_18, text_color: gray500}
+        - label: {clickable: false, align: TOP_RIGHT, x: -30, y: 96, text: "OUT", text_font: oswald_18, text_color: gray500}
+
+        # Drawing surface for ribbons — clickable:false so swipes pass. Canvas at
+        # screen y=120 (below headers), height 456, leaving the 72px foot strip.
+        - canvas:
+            id: sankey_canvas
+            x: 0
+            y: 120
+            width: 720
+            height: 456
+            clickable: false
+
+        # Lane bars' glyph + value overlays (repositioned + repainted by
+        # refresh_sankey). Each pair is BW(56)-wide + centre-aligned so the
+        # runtime set_pos x = bar x centres it on the bar. Dark text so it reads
+        # against the bright lane-colour bar fill. IN bar x≈72, OUT bar x≈592.
+        # *_g = source glyph; the value label (no suffix) keeps its old id so the
+        # top-bar/other refs are undisturbed. Initial x/y are placeholders.
+        - label: {id: sk_in_pv_g,   clickable: false, align: TOP_LEFT, x: 72,  y: 200, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_in_pv,     clickable: false, align: TOP_LEFT, x: 72,  y: 234, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+        - label: {id: sk_in_bat_g,  clickable: false, align: TOP_LEFT, x: 72,  y: 360, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_in_bat,    clickable: false, align: TOP_LEFT, x: 72,  y: 394, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+        - label: {id: sk_in_grid_g, clickable: false, align: TOP_LEFT, x: 72,  y: 470, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_in_grid,   clickable: false, align: TOP_LEFT, x: 72,  y: 504, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+        - label: {id: sk_o_home_g,  clickable: false, align: TOP_LEFT, x: 592, y: 180, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_o_home,    clickable: false, align: TOP_LEFT, x: 592, y: 214, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+        - label: {id: sk_o_ev_g,    clickable: false, align: TOP_LEFT, x: 592, y: 280, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_o_ev,      clickable: false, align: TOP_LEFT, x: 592, y: 314, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+        - label: {id: sk_o_hp_g,    clickable: false, align: TOP_LEFT, x: 592, y: 340, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_o_hp,      clickable: false, align: TOP_LEFT, x: 592, y: 374, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+        - label: {id: sk_o_bchg_g,  clickable: false, align: TOP_LEFT, x: 592, y: 430, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_o_bchg,    clickable: false, align: TOP_LEFT, x: 592, y: 464, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+        - label: {id: sk_o_exp_g,   clickable: false, align: TOP_LEFT, x: 592, y: 500, width: 56, text_align: CENTER, text: "", text_font: mdi_bar_30, text_color: 0x0D0D0D}
+        - label: {id: sk_o_exp,     clickable: false, align: TOP_LEFT, x: 592, y: 534, width: 56, text_align: CENTER, text: "", text_font: oswald_18, text_color: 0x0D0D0D}
+
+        # ── Foot strip: EV kWh / HP kWh / self-sufficiency % (bottom 72px) ──
+        - obj:
+            id: sk_foot
+            clickable: false
+            align: BOTTOM_MID
+            y: 0
+            width: 720
+            height: 72
+            bg_color: 0x101216
+            bg_opa: cover
+            border_width: 0
+            radius: 0
+            pad_all: 0
+            scrollable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_EVENLY, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  clickable: false
+                  width: 228
+                  height: 60
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 8}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_car_electric, text_font: mdi_energy_28, text_color: violet}
+                    - label: {id: sk_foot_ev, clickable: false, text: "0.0 kWh EV", text_font: oswald_20, text_color: white}
+              - obj:
+                  clickable: false
+                  width: 228
+                  height: 60
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 8}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_heat_pump, text_font: mdi_energy_28, text_color: orange}
+                    - label: {id: sk_foot_hp, clickable: false, text: "0.0 kWh HP", text_font: oswald_20, text_color: white}
+              - obj:
+                  clickable: false
+                  width: 228
+                  height: 60
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 8}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_leaf, text_font: mdi_energy_28, text_color: green}
+                    - label: {id: sk_foot_self, clickable: false, text: "0% self", text_font: oswald_20, text_color: white}

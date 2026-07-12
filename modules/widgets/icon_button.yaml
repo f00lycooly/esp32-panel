@@ -1,0 +1,40 @@
+# ───────────────────────────────────────────────────────────────────────────
+# icon_button.yaml — circular icon button
+#
+# A round button (w==h, radius pinned to a full circle, pad 0) with one centred
+# MDI glyph. Replaces the inline back / close / cog / media-transport /
+# climate-± buttons that were hand-built 6+ times at 52–84px.
+#
+# ESPHome !include can't carry an arbitrary on_click action as a var, so this
+# emits the button's PROPERTY-MAP only (no `button:` wrapper, no on_click). The
+# caller merges it under a `button:` with `<<:` and adds the page-specific action:
+#
+#   - button:
+#       <<: !include
+#         file: widgets/icon_button.yaml
+#         vars: {uid: back_climate, size: 56, glyph: $mdi_chevron_left,
+#                glyph_font: mdi_card_28, bg: very_dark_gray, fg: white}
+#       on_click:
+#         - lvgl.page.show: main_page
+#
+# The glyph label is `ic_${uid}` so an on_value lambda can recolour/relabel it
+# (e.g. play↔pause, shuffle on/off) — keep that id stable when converting tiles.
+#
+# vars: uid, size, glyph, glyph_font, bg, fg
+#   accent ("primary") variant = pass bg: ep_blue, fg: black.
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+width: ${size}
+height: ${size}
+radius: 9999          # clamps to half the side → perfect circle at any size
+bg_color: ${bg}
+border_width: 0
+pad_all: 0
+widgets:
+  - label:
+      id: ic_${uid}
+      clickable: false
+      align: CENTER
+      text: ${glyph}
+      text_font: ${glyph_font}
+      text_color: ${fg}

@@ -1,0 +1,3 @@
+# Capture OFF for alarm: inert. The page is included on
+# panels without display-capture; emitting nothing keeps them endpoint-free.
+{}

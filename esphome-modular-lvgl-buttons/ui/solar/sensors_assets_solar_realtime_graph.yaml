@@ -1,0 +1,156 @@
+# You need at add energy_info.yaml to your Home Assistant configuration.yaml
+---
+globals:
+  - id: consumption_history
+    type: std::vector<float>
+    restore_value: false
+  - id: production_history
+    type: std::vector<float>
+    restore_value: false
+
+script:
+  - id: !extend on_ha_connected
+    then:
+      # Delay to avoid colliding with fetch_solar_today action call
+      - delay: 5s
+      - script.execute: fetch_solar_history
+
+  - id: fetch_solar_history
+    then:
+      - logger.log:
+          level: INFO
+          format: "Requesting 5-min solar history (24h)..."
+      - homeassistant.action:
+          action: recorder.get_statistics
+          data_template:
+            statistic_ids: >-
+              {{ [
+                'sensor.envoy_${envoy_id}_current_power_consumption',
+                'sensor.envoy_${envoy_id}_current_power_production'
+              ] }}
+            start_time: >-
+              {{ (now() - timedelta(hours=24)).isoformat() }}
+            period: 5minute
+            types: >-
+              {{ ['mean'] }}
+          capture_response: true
+          response_template: >-
+            {%- set stats = response.statistics -%}
+            {%- set c_id = 'sensor.envoy_${envoy_id}_current_power_consumption' -%}
+            {%- set p_id = 'sensor.envoy_${envoy_id}_current_power_production' -%}
+            {%- set consumption = stats.get(c_id, []) -%}
+            {%- set production = stats.get(p_id, []) -%}
+            {%- set c_unit = state_attr(c_id, 'unit_of_measurement') | default('kW') -%}
+            {{ {
+              'consumption': consumption | map(attribute='mean') | map('default', 0, true) | list | map('round', 3) | join(','),
+              'production': production | map(attribute='mean') | map('default', 0, true) | list | map('round', 3) | join(','),
+              'count': consumption | length,
+              'unit': c_unit
+            } | tojson }}
+          on_success:
+            - lambda: |-
+                auto data = response["response"];
+                int count = data["count"].as<int>();
+                std::string c_str = data["consumption"].as<std::string>();
+                std::string p_str = data["production"].as<std::string>();
+                std::string unit = data["unit"].as<std::string>();
+
+                // Parse comma-separated values into vectors
+                auto parse_csv = [](const std::string& str, std::vector<float>& vec) {
+                  vec.clear();
+                  if (str.empty()) return;
+                  size_t start = 0;
+                  size_t end;
+                  while ((end = str.find(',', start)) != std::string::npos) {
+                    vec.push_back(atof(str.substr(start, end - start).c_str()));
+                    start = end + 1;
+                  }
+                  if (start < str.length()) {
+                    vec.push_back(atof(str.substr(start).c_str()));
+                  }
+                };
+
+                parse_csv(c_str, id(consumption_history));
+                parse_csv(p_str, id(production_history));
+
+                // Update consumption chart
+                auto& c_data = id(consumption_history);
+                int data_count = c_data.size();
+                if (data_count > 0) {
+                  bool is_watts = (unit == "W");
+
+                  float max_val = 0;
+                  for (auto& v : c_data) {
+                    float abs_v = fabs(v);
+                    if (abs_v > max_val) max_val = abs_v;
+                  }
+
+                  // Round up to next multiple of 5 kW for clean tick labels
+                  float max_kw = is_watts ? max_val / 1000.0f : max_val;
+                  int max_chart_kw = ((int)(max_kw / 5.0f) + 1) * 5;
+                  if (max_chart_kw < 5) max_chart_kw = 5;
+                  if (max_chart_kw > 30) max_chart_kw = 30;
+
+                  lv_chart_set_point_count(id(consumption_chart_widget), data_count);
+                  lv_chart_set_range(id(consumption_chart_widget), LV_CHART_AXIS_PRIMARY_Y, 0, max_chart_kw);
+
+                  for (int i = 0; i < data_count; i++) {
+                    float kw = is_watts ? fabs(c_data[i]) / 1000.0f : fabs(c_data[i]);
+                    int val = (int)(kw + 0.5f);
+                    if (val > max_chart_kw) val = max_chart_kw;
+                    lv_chart_set_value_by_id(id(consumption_chart_widget), id(consumption_chart_series), i, val);
+                  }
+
+                  // Configure axis ticks
+                  lv_chart_set_axis_tick(id(consumption_chart_widget), LV_CHART_AXIS_PRIMARY_Y, 10, 5, 6, 2, true, 40);
+                  lv_chart_set_axis_tick(id(consumption_chart_widget), LV_CHART_AXIS_PRIMARY_X, 10, 5, 7, 2, true, 25);
+
+                  // Register X-axis time label callback (once)
+                  static bool x_tick_cb_registered = false;
+                  if (!x_tick_cb_registered) {
+                    lv_obj_add_event_cb(id(consumption_chart_widget), [](lv_event_t *e) {
+                      lv_obj_draw_part_dsc_t *dsc = lv_event_get_draw_part_dsc(e);
+                      if (!dsc || dsc->type != LV_CHART_DRAW_PART_TICK_LABEL) return;
+                      if (!dsc->text || dsc->id != LV_CHART_AXIS_PRIMARY_X) return;
+                      int hours_ago = (6 - dsc->value) * 4;
+                      auto now = id(system_time).now();
+                      if (!now.is_valid()) return;
+                      time_t target = now.timestamp - (hours_ago * 3600);
+                      struct tm *t = localtime(&target);
+                      int hour = t->tm_hour;
+                      const char *ampm = hour >= 12 ? "p" : "a";
+                      int h12 = hour % 12;
+                      if (h12 == 0) h12 = 12;
+                      lv_snprintf(dsc->text, dsc->text_length, "%d%s", h12, ampm);
+                    }, LV_EVENT_DRAW_PART_BEGIN, nullptr);
+                    x_tick_cb_registered = true;
+                  }
+
+                  lv_chart_refresh(id(consumption_chart_widget));
+                  ESP_LOGI("solar_chart", "Chart updated: %d points, range 0-%d kW", data_count, max_chart_kw);
+                }
+
+          on_error:
+            - logger.log:
+                level: ERROR
+                format: "Error fetching solar history!"
+
+interval:
+  - interval: 5min
+    then:
+      - if:
+          condition:
+            api.connected:
+          then:
+            - script.execute: fetch_solar_history
+
+sensor:
+  - platform: homeassistant
+    id: current_power_consumption
+    entity_id: sensor.envoy_${envoy_id}_current_power_consumption
+    internal: true
+
+  - platform: homeassistant
+    id: current_power_production
+    entity_id: sensor.envoy_${envoy_id}_current_power_production
+    internal: true

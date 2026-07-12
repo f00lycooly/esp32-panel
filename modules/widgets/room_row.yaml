@@ -1,0 +1,64 @@
+# ───────────────────────────────────────────────────────────────────────────
+# room_row.yaml — speaker/room row with volume
+#
+# A full-width row for the Multi-Room list: the speaker GLYPH IS the group toggle
+# (left), then the room name (grows), then a volume slider (right). No separate
+# link icon — tapping the glyph groups/ungroups the room (.2 design).
+#
+# Abstract-script contract (nested controls can't take per-instance actions):
+#   • the glyph button calls `${uid}_toggle` on click — the page groups/ungroups.
+#   • the slider calls `${uid}_vol` on release — the page reads
+#     `lv_slider_get_value(id(vol_${uid}))` (0..100) and pushes it to HA.
+#
+#   - obj:
+#       <<: !include {file: widgets/room_row.yaml, vars: {uid: rr_living,
+#              icon: $mdi_speaker, name: "Living Room", icon_font: mdi_main_28}}
+#   # page-side: script ${uid}_vol / ${uid}_toggle; recolour ic_${uid} green when
+#   # grouped / grey when not (grouped state owned by the page).
+#
+# ids: ${uid} (row), grp_${uid} (glyph toggle button), ic_${uid} (its glyph —
+#      recoloured for grouped state), name_${uid}, vol_${uid} (slider).
+# vars: uid, icon, name, bg (default gray900), fg (default white),
+#       accent (default ep_blue),
+#       icon_font (the MDI font holding `icon` — pass a font whose
+#       glyphs: list includes it; mdi_card_28 only carries the transport/badge
+#       set, so room-appliance glyphs (sofa/fridge/tv/garage/bed) need a font the
+#       consumer declares, e.g. page-main's mdi_main_28).
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+width: 100%
+height: 68
+bg_color: ${bg}
+radius: 14
+border_width: 0
+pad_left: 18
+pad_right: 14
+pad_top: 0
+pad_bottom: 0
+scrollable: false
+layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16}
+widgets:
+  # GLYPH = group toggle (recoloured green/grey by the page for grouped state).
+  - button:
+      id: grp_$uid
+      width: 64
+      height: 64
+      radius: 16
+      bg_color: very_dark_gray
+      border_width: 0
+      pad_all: 0
+      widgets:
+        - label: {id: ic_$uid, clickable: false, align: CENTER, text: $icon, text_font: $icon_font, text_color: $fg}
+      on_click:
+        - script.execute: ${uid}_toggle
+  - label: {id: name_$uid, clickable: false, text: "$name", text_font: oswald_24, text_color: $fg, flex_grow: 1}
+  - slider:
+      id: vol_$uid
+      width: 200
+      min_value: 0
+      max_value: 100
+      value: 30
+      indicator: {bg_color: $accent}
+      knob: {bg_color: white}
+      on_release:
+        - script.execute: ${uid}_vol

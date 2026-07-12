@@ -1,0 +1,112 @@
+# ───────────────────────────────────────────────────────────────────────────
+# now_playing_dock.yaml — compact now-playing dock
+#
+# The persistent ~180px media dock (bottom 25%): album art (left), room + title
+# (centre, title grows), a progress bar, and prev / play-pause / next transport.
+# Used on Now Playing + as the mini-dock on the Multi-Room / Browse views.
+#
+# Album art is an `online_image` the CALLER declares (cover url, runtime-refreshed)
+# and passes as `art_src`. Abstract-script contract for the transport (nested
+# buttons): the page implements `${uid}_prev`, `${uid}_play`, `${uid}_next`.
+#
+#   online_image: [{id: np_art_img, url: !lambda '...', format: PNG, resize: 150x150}]
+#   - obj:
+#       <<: !include {file: widgets/now_playing_dock.yaml, vars: {uid: np,
+#              art_src: np_art_img}}
+#   # page-side: scripts ${uid}_prev/_play/_next; paint room/title/progress + the
+#   # play glyph (ic_np_play) from the media sensors.
+#
+# ids: ${uid} (dock), art_${uid}, room_${uid}, title_${uid}, prog_${uid} (bar),
+#      prev_${uid} / play_${uid} / next_${uid} (buttons), ic_${uid}_play (glyph).
+# vars: uid, art_src, bg (default 0x14161B), fg (default white), accent (ep_blue)
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+width: 100%
+height: 180
+bg_color: ${bg}
+radius: 18
+border_width: 0
+pad_all: 16
+scrollable: false
+layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16}
+widgets:
+  # Album art (square), clipped to a rounded tile.
+  - obj:
+      width: 148
+      height: 148
+      radius: 12
+      clip_corner: true
+      bg_color: gray900
+      border_width: 0
+      pad_all: 0
+      scrollable: false
+      clickable: false
+      widgets:
+        - image: {id: art_$uid, src: $art_src, align: CENTER, clickable: false}
+  # Centre column: room · title · progress (grows to fill).
+  - obj:
+      flex_grow: 1
+      height: 148
+      bg_opa: TRANSP
+      border_width: 0
+      pad_all: 0
+      scrollable: false
+      clickable: false
+      layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 8}
+      widgets:
+        - label: {id: room_$uid,  clickable: false, text: "", text_font: oswald_18, text_color: gray400}
+        - label: {id: title_$uid, clickable: false, width: 100%, long_mode: DOT, text: "Nothing playing", text_font: oswald_24, text_color: $fg}
+        - bar:   {id: prog_$uid, width: 100%, height: 6, min_value: 0, max_value: 1000, value: 0, indicator: {bg_color: $accent}}
+        # Transport row.
+        - obj:
+            width: SIZE_CONTENT
+            height: SIZE_CONTENT
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 20}
+            widgets:
+              - button:
+                  id: prev_${uid}
+                  width: 56
+                  height: 56
+                  radius: 9999
+                  bg_color: very_dark_gray
+                  border_width: 0
+                  pad_all: 0
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: $mdi_skip_previous, text_font: mdi_card_28, text_color: $fg}
+                  on_click:
+                    - script.execute: ${uid}_prev
+              - button:
+                  id: play_${uid}
+                  width: 64
+                  height: 64
+                  radius: 9999
+                  bg_color: ${accent}
+                  border_width: 0
+                  pad_all: 0
+                  widgets:
+                    - label:
+                        id: ic_${uid}_play
+                        clickable: false
+                        align: CENTER
+                        text: $mdi_play
+                        text_font: mdi_card_28
+                        text_color: black
+                  on_click:
+                    - script.execute: ${uid}_play
+              - button:
+                  id: next_${uid}
+                  width: 56
+                  height: 56
+                  radius: 9999
+                  bg_color: very_dark_gray
+                  border_width: 0
+                  pad_all: 0
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: $mdi_skip_next, text_font: mdi_card_28, text_color: $fg}
+                  on_click:
+                    - script.execute: ${uid}_next

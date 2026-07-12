@@ -1,0 +1,4 @@
+# Capture OFF for the voice persona: inert. voice-overlay is
+# included on panels without display-capture; emitting nothing keeps the voice
+# capture helpers and ?modal= voice entries out of those builds.
+{}

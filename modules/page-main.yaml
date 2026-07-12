@@ -1,0 +1,1121 @@
+# ───────────────────────────────────────────────────────────────────────────────
+# page-main.yaml — MAIN function (home / now-playing page).
+# Included as a package by waveshare-p4-86-panel.yaml; MUST be the first page
+# package listed so main_page merges first (boot/default page, swipe order).
+#
+# MAIN is the music function. Two swipe pages (nav2d F0):
+#   • main_page      (F0 P0, HOME) — Now Playing, 3 states (.1):
+#       IDLE    — landing: "Nothing playing" + 3 launch tiles (Pick Music /
+#                 Browse / Rooms) + a recently-played cover row.
+#       PLAYING — full-bleed album art (online_image) + ghost top bar (the
+#                 singleton bar overlays) + source/title/artist bottom-left.
+#       TAPPED  — dim overlay (~62%) + transport (shuffle/prev/play/next/repeat)
+#                 + horizontal volume + Pick/Browse/Rooms quick-launch.
+#       DOUBLE-TAP anywhere = play/pause; single tap toggles the overlay.
+#   • multiroom_page (F0 P1) — Sonos zones as rows (.2): the speaker glyph
+#       IS the group toggle (green grouped / grey not), name (active=green),
+#       volume bar; a 25% now-playing mini-dock at the bottom.
+#
+# OWNERSHIP / CROSS-PACKAGE CONTRACT (-8 build contract §3, §5):
+#   This file (M1) owns ONLY presentation + the Sonos room scripts. The media
+#   BACKEND is page-media.yaml (M2): it provides the now-playing text_sensors
+#   (media_state / media_title / media_artist / media_device_name), the
+#   media_volume sensor, the active target (active_media_player + the active
+#   resolver media_active_target), media_play_uri(uri), and the dock transport
+#   scripts npd_prev / npd_play / npd_next (now_playing_dock uid: npd). M1
+#   REFERENCES those by their contracted names; it never writes page-media.
+#   The Pick-Music / Browse takeover PAGES (pick_music_page / browse_page) are
+#   defined by M2; M1's launch tiles just takeover_enter + lvgl.page.show them.
+#
+# RENDERING MODEL: M1 drives its own presentation from a 1s np_refresh interval
+#   lambda that READS the M2 sensors via .state (state-owned-by-page convention,
+#   widgets/COMPONENTS.md) — it does NOT depend on M2 pushing into M1 widget ids.
+#   Full-bleed art is a page-LOCAL online_image (np_bg_art) fed by a page-local
+#   text_sensor off ${media_mirror_entity}'s entity_picture, so a crisp
+#   480-px background needs no edit to page-media's 240-px hero image.
+#
+# Cross-package ids (resolve after the package merge): page_style + theme colours
+#   (ep_blue/ep_green/ep_orange/very_dark_gray/gray400/gray500/gray700/gray900/
+#   white/black) + oswald_*/mdi_* fonts (ui-shared + library theme); nav2d
+#   (nav_arrive, takeover_enter); M2 ids listed above; pick_music_page/browse_page
+#   (M2). batt_soc/batt_kw (top-bar battery pill) live in ui-shared.
+# ───────────────────────────────────────────────────────────────────────────────
+
+# Non-blocking boot: the library boot splash
+# (loading.yaml) only auto-dismisses when a Home Assistant API client connects —
+# so with HA unavailable the panel would sit on "Booting…" forever (only a screen
+# tap cleared it). This fallback dismisses the splash after 12s regardless, so the
+# UI is usable offline; the cog's status ring then shows the (red) HA state.
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoints. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_main: !include capture/${capture_mode}/main.yaml
+
+esphome:
+  on_boot:
+    - priority: -100
+      then:
+        - delay: 12s
+        - if:
+            condition:
+              lambda: 'return !id(ha_connected);'
+            then:
+              - logger.log: "HA not connected after 12s — dismissing boot splash (offline UI)"
+              - lvgl.widget.hide: loading_page
+
+sensor:
+  # batt_soc + batt_kw (top-bar battery pill / energy Sankey) live in ui-shared —
+  # every top-bar panel needs them, page-main or not (Hallway has no page-main).
+  # Link-quality diagnostic: the panel↔C6 esp-hosted WiFi is running ~50x
+  # under spec; expose RSSI to find out if it's signal (wall-box attenuation) vs
+  # the esp-hosted/SDIO side. Surfaced in HA as sensor.<name>_panel_wifi_rssi.
+  - platform: wifi_signal
+    name: "Panel WiFi"
+    id: panel_wifi_rssi
+    update_interval: 10s
+
+globals:
+  # Recently Played strip (1ch): bare track ids for the 4 tiles, split from the
+  # spotify_panel_recent ids_4 attribute; tap a tile → play spotify:track:<id>.
+  - id: rec_ids
+    type: 'std::array<std::string, 4>'
+    restore_value: false
+  # Now-Playing tap state (.1). np_overlay_on tracks whether the tap-overlay
+  # is shown; np_last_tap (ms) detects the double-tap window for play/pause.
+  - id: np_overlay_on
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: np_last_tap
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  # Set by the tap handler when a double-tap fires, so a following `if` action can
+  # run the npd_play SCRIPT (M2) — scripts aren't callable from inside a lambda.
+  - id: np_dbl
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # Cached "is something playing" so the overlay quick-launch + label block only
+  # arm over the PLAYING surface (over IDLE the tiles are already on-screen).
+  - id: np_is_playing
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  # Last time (ms) the user touched the volume slider. np_refresh suppresses the
+  # device→slider sync for 2s after, so the device echo doesn't yank the knob
+  # mid/just-after a drag (two-way volume sync — ).
+  - id: vol_user_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  # Page-visibility gates (mirror page-energy's nowflow_active/sankey_active):
+  # set by each page's on_load/on_unload so the 1s np_refresh/mr_refresh repaints
+  # only run while their widgets are actually on-screen. mr_refresh also paints
+  # the hero's np_ctrl_label (main_page), so it is live on BOTH pages.
+  - id: main_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: multiroom_active
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+font:
+  # Transport glyphs for the tap-overlay (shuffle/prev/play/pause/next/repeat).
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_np_44
+    size: 44
+    bpp: 4
+    glyphs:
+      - $mdi_play
+      - $mdi_pause
+      - $mdi_skip_next
+      - $mdi_skip_previous
+      - $mdi_shuffle
+      - $mdi_repeat
+      - $mdi_repeat_off
+      - $mdi_repeat_once
+  # Launch-tile + idle + dock glyphs (idle landing, overlay quick-launch, rows).
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_main_54
+    size: 54
+    bpp: 4
+    glyphs:
+      - $mdi_playlist_music
+      - $mdi_compass
+      - $mdi_speaker_multiple
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_main_80
+    size: 80
+    bpp: 4
+    glyphs:
+      - $mdi_music_note_off
+  # Rooms-grid card glyphs (multiroom_page) + overlay quick-launch + the
+  # "Controlling ▾" chip + Follow Me. (Room-kind + transport glyphs dropped —
+  # nothing rendered with this font uses them; transport lives in mdi_np_44.)
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_main_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_playlist_music
+      - $mdi_compass
+      - $mdi_speaker_multiple
+      - $mdi_account_group
+      - $mdi_walk
+      - $mdi_chevron_down
+
+online_image:
+  # Full-bleed Now-Playing background art (.1). Page-LOCAL so it can target a
+  # crisp 480-px square (page-media's album_art_image is 240-px for the old hero —
+  # left untouched per file ownership). URL pushed at runtime from the active
+  # player's entity_picture by the np_art_url text_sensor below.
+  - id: np_bg_art
+    url: "${ha_base_url}/"   # placeholder; real URL pushed via set_url
+    format: JPEG
+    type: RGB565
+    resize: 480x480
+    update_interval: never
+    on_download_finished:
+      - lvgl.image.update: {id: np_art_img, src: np_bg_art}
+      - lvgl.widget.show: np_art_img
+      - lvgl.widget.hide: np_art_grad
+    on_error:
+      - logger.log: "now-playing art download failed; showing gradient fallback"
+      - lvgl.widget.hide: np_art_img
+      - lvgl.widget.show: np_art_grad
+
+  # Recently Played covers (1ch): 4 tiles on the idle landing, fed by
+  # sensor.spotify_panel_recent cover_0..3. Downloads run through the page-media
+  # cov_pump serialiser — slots 16..19 — so they never fetch concurrently
+  # with the Pick/Browse covers. on_download_finished shows the tile + clears the
+  # serialiser's inflight gate; on_error clears it too (don't stall the queue).
+  - id: rec_cover_img_0
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 104x104
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_rec_0, src: rec_cover_img_0}}, {lvgl.widget.show: img_rec_0}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: rec_cover_img_1
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 104x104
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_rec_1, src: rec_cover_img_1}}, {lvgl.widget.show: img_rec_1}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: rec_cover_img_2
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 104x104
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_rec_2, src: rec_cover_img_2}}, {lvgl.widget.show: img_rec_2}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: rec_cover_img_3
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 104x104
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_rec_3, src: rec_cover_img_3}}, {lvgl.widget.show: img_rec_3}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+
+text_sensor:
+  # Page-local art-url feed: the mirror sensor exposes a relative entity_picture
+  # (/api/media_player_proxy/...?token=...). Empty -> revert to gradient fallback.
+  - platform: homeassistant
+    id: np_art_url
+    entity_id: ${media_mirror_entity}
+    attribute: entity_picture
+    on_value:
+      - if:
+          condition:
+            lambda: 'return x.empty();'
+          then:
+            - lvgl.widget.hide: np_art_img
+            - lvgl.widget.show: np_art_grad
+          else:
+            - online_image.set_url:
+                id: np_bg_art
+                url: !lambda |-
+                  std::string src = (x.rfind("http", 0) == 0) ? x : (std::string("${ha_base_url}") + x);
+                  // Route Spotify-CDN AND HA media_player_proxy art through the
+                  // imageproxy so the panel pulls a pre-sized ~150KB image instead of the
+                  // raw 244KB (Sonos art is an HA media_player_proxy URL). The big raw
+                  // download otherwise stalls the SDIO link + UI loop (slow art/title).
+                  // imageproxy allowHosts must include the HA origin.
+                  if (src.find("scdn.co") != std::string::npos || src.find("spotifycdn.com") != std::string::npos
+                      || src.find("${ha_base_url}") != std::string::npos)
+                    return std::string("${imageproxy_url}/480x480/") + src;
+                  return src;
+
+  # Recently Played feed (1ch): cover_0..3 stash url+want into the serialiser slots
+  # 16..19 (cov_pump downloads one at a time); ids_4 splits into rec_ids for tap-to-play.
+  - platform: homeassistant
+    id: spotify_recent_cover_0
+    entity_id: ${spotify_recent_entity}
+    attribute: cover_0
+    on_value:
+      - lambda: 'if (!x.empty()) { id(cov_url)[16] = x; id(cov_want)[16] = true; }'
+  - platform: homeassistant
+    id: spotify_recent_cover_1
+    entity_id: ${spotify_recent_entity}
+    attribute: cover_1
+    on_value:
+      - lambda: 'if (!x.empty()) { id(cov_url)[17] = x; id(cov_want)[17] = true; }'
+  - platform: homeassistant
+    id: spotify_recent_cover_2
+    entity_id: ${spotify_recent_entity}
+    attribute: cover_2
+    on_value:
+      - lambda: 'if (!x.empty()) { id(cov_url)[18] = x; id(cov_want)[18] = true; }'
+  - platform: homeassistant
+    id: spotify_recent_cover_3
+    entity_id: ${spotify_recent_entity}
+    attribute: cover_3
+    on_value:
+      - lambda: 'if (!x.empty()) { id(cov_url)[19] = x; id(cov_want)[19] = true; }'
+  - platform: homeassistant
+    id: spotify_recent_ids
+    entity_id: ${spotify_recent_entity}
+    attribute: ids_4
+    on_value:
+      - lambda: |-
+          for (int i = 0; i < 4; i++) id(rec_ids)[i] = "";
+          std::string s = x;
+          for (int n = 0; n < 4; n++) {
+            size_t p = s.find('\n');
+            id(rec_ids)[n] = (p == std::string::npos) ? s : s.substr(0, p);
+            if (p == std::string::npos) break;
+            s = s.substr(p + 1);
+          }
+
+lvgl:
+  pages:
+    # ═════════════════════ HOME · NOW PLAYING (.1) ═════════════════════
+    - id: main_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml   # 2D nav
+      on_load:
+        - script.execute: {id: nav_arrive, f: 0, p: 0}   # MAIN home
+        - lambda: 'id(main_active) = true;'
+        - script.execute: np_refresh
+        - script.execute: mr_refresh    # first paint of the "Controlling ▾" chip
+        # Volume slider must NOT bubble its drag-gesture to the page (else up/down on
+        # the slider triggers nav2d screen-change). Clear the flag once on load.
+        - lambda: 'lv_obj_clear_flag(id(np_vol), LV_OBJ_FLAG_GESTURE_BUBBLE);'
+      on_unload:
+        - lambda: 'id(main_active) = false;'
+      widgets:
+        # ───────────── FULL-BLEED ART LAYER (background, z-bottom) ─────────────
+        # Gradient fallback (shown when no art) — a 2-stop vertical bg_grad.
+        - obj:
+            id: np_art_grad
+            clickable: false
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            width: 720
+            height: 720
+            bg_color: 0x2A3B1E
+            bg_grad_color: 0x0D0D0D
+            bg_grad_dir: VER
+            border_width: 0
+            radius: 0
+            pad_all: 0
+            scrollable: false
+            widgets:
+              - label: {clickable: false, align: CENTER, text: $mdi_music_note_off, text_font: mdi_main_80, text_color: 0x1A1D14}
+        # Real cover art (online_image), full-bleed, hidden until first download.
+        - image: {id: np_art_img, clickable: false, align: CENTER, src: np_bg_art, hidden: true}
+
+        # ───────────── PLAYING LABEL BLOCK (source · title · artist) ─────────────
+        # Bottom-left over the art. Hidden in IDLE (no art) by np_refresh.
+        - obj:
+            id: np_label
+            clickable: false
+            align: BOTTOM_LEFT
+            x: 30
+            y: -24
+            width: 600
+            height: 170
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: END, flex_align_cross: START, pad_row: 4}
+            widgets:
+              - label: {id: np_src,    clickable: false, text: "", text_font: oswald_20, text_color: ep_green}
+              - label: {id: np_title,  clickable: false, width: 600, text: "—", text_font: oswald_48, text_color: white}
+              - label: {id: np_artist, clickable: false, width: 600, text: "", text_font: oswald_24, text_color: gray400}
+
+        # ───────────── DOUBLE-TAP / TAP CATCHER (full content area) ─────────────
+        # Declared BEFORE the idle landing + overlay so it sits BELOW them in
+        # z-order: the idle launch tiles (shown only when nothing plays) and the
+        # overlay controls take their own taps; this catcher only receives taps
+        # over the bare PLAYING surface. Covers y 72..648 so it never eats the
+        # singleton top bar. Single tap toggles the overlay; a second tap within
+        # 400ms = play/pause.
+        - button:
+            id: np_tap
+            align: TOP_LEFT
+            x: 0
+            y: 72
+            width: 720
+            height: 576
+            bg_opa: TRANSP
+            border_width: 0
+            radius: 0
+            pad_all: 0
+            on_click:
+              # Compute single- vs double-tap in a lambda (sets np_dbl), apply the
+              # overlay toggle inline, then fire the play/pause SCRIPT as a separate
+              # action (npd_play is an M2 script — not callable from a lambda).
+              - lambda: |-
+                  uint32_t now = millis();
+                  uint32_t dt = now - id(np_last_tap);
+                  id(np_last_tap) = now;
+                  if (dt < 400) {
+                    // double-tap → dismiss overlay; play/pause handled by the if below
+                    id(np_dbl) = true;
+                    id(np_overlay_on) = false;
+                    lv_obj_add_flag(id(np_overlay), LV_OBJ_FLAG_HIDDEN);
+                  } else {
+                    id(np_dbl) = false;
+                    // single tap → toggle the controls overlay (only over PLAYING)
+                    if (id(np_is_playing)) {
+                      id(np_overlay_on) = !id(np_overlay_on);
+                      if (id(np_overlay_on)) lv_obj_clear_flag(id(np_overlay), LV_OBJ_FLAG_HIDDEN);
+                      else                   lv_obj_add_flag(id(np_overlay), LV_OBJ_FLAG_HIDDEN);
+                    }
+                  }
+              - if:
+                  condition: {lambda: 'return id(np_dbl);'}
+                  then:
+                    - script.execute: npd_play
+
+        # ───────────── IDLE LANDING (shown when nothing playing) ─────────────
+        - obj:
+            id: np_idle
+            clickable: false
+            align: TOP_MID
+            y: 72
+            width: 720
+            height: 576
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            # 1ch: centre the idle stack in the area below the top bar (y72..648),
+            # was START-aligned (top-heavy) with the recent strip overflowing off-screen.
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 0}
+            widgets:
+              - label: {clickable: false, text: $mdi_music_note_off, text_font: mdi_main_80, text_color: 0x33373F}
+              - label: {clickable: false, text: "Nothing playing", text_font: oswald_42, text_color: white, pad_top: 2}
+              - label: {clickable: false, text: "${local_room_label}", text_font: oswald_20, text_color: gray500, pad_top: 2}
+              # 3 launch tiles — Pick Music / Browse / Rooms.
+              - obj:
+                  clickable: false
+                  width: 600
+                  height: 158
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  pad_top: 24
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 18}
+                  widgets:
+                    - button:
+                        id: tile_pick
+                        width: 188
+                        height: 158
+                        radius: 20
+                        bg_color: 0x14161B
+                        border_width: 1
+                        border_color: gray700
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 12}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_playlist_music, text_font: mdi_main_54, text_color: ep_green}
+                          - label: {clickable: false, text: "Pick Music", text_font: oswald_24, text_color: white}
+                        on_click:
+                          - script.execute: takeover_enter
+                          - lvgl.page.show: pick_music_page
+                    - button:
+                        id: tile_browse
+                        width: 188
+                        height: 158
+                        radius: 20
+                        bg_color: 0x14161B
+                        border_width: 1
+                        border_color: gray700
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 12}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_compass, text_font: mdi_main_54, text_color: ep_green}
+                          - label: {clickable: false, text: "Browse", text_font: oswald_24, text_color: white}
+                        on_click:
+                          - script.execute: takeover_enter
+                          - lvgl.page.show: browse_page
+                    - button:
+                        id: tile_rooms
+                        width: 188
+                        height: 158
+                        radius: 20
+                        bg_color: 0x14161B
+                        border_width: 1
+                        border_color: gray700
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 12}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_speaker_multiple, text_font: mdi_main_54, text_color: ep_green}
+                          - label: {clickable: false, text: "Rooms", text_font: oswald_24, text_color: white}
+                        on_click:
+                          - lvgl.page.show: multiroom_page
+              # Recently-played strip: 4 most-recent items. Covers are placeholder
+              # gradients until the HA recent-played feed lands (sensor.spotify_panel_recent
+              # — see 1ch; not yet in HA). Trimmed to 104px so the centred idle stack
+              # fits within the screen (was 130px + big pads → ran off the bottom edge).
+              - label: {clickable: false, text: "RECENTLY PLAYED", text_font: oswald_18, text_color: gray500, pad_top: 18}
+              - obj:
+                  clickable: false
+                  width: 600
+                  height: 104
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  pad_top: 10
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 16}
+                  widgets:
+                    # Each tile: a dark loading square with the cover image on top
+                    # (hidden until rec_cover_img_N downloads); tap → play that track.
+                    - button:
+                        id: rec_tile_0
+                        width: 104
+                        height: 104
+                        radius: 14
+                        bg_color: 0x1A1C22
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        widgets:
+                          - image: {id: img_rec_0, clickable: false, align: CENTER, src: rec_cover_img_0, hidden: true}
+                        on_click:
+                          - script.execute: {id: media_play_uri, uri: !lambda 'return id(rec_ids)[0].empty() ? std::string("") : std::string("spotify:track:") + id(rec_ids)[0];'}
+                    - button:
+                        id: rec_tile_1
+                        width: 104
+                        height: 104
+                        radius: 14
+                        bg_color: 0x1A1C22
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        widgets:
+                          - image: {id: img_rec_1, clickable: false, align: CENTER, src: rec_cover_img_1, hidden: true}
+                        on_click:
+                          - script.execute: {id: media_play_uri, uri: !lambda 'return id(rec_ids)[1].empty() ? std::string("") : std::string("spotify:track:") + id(rec_ids)[1];'}
+                    - button:
+                        id: rec_tile_2
+                        width: 104
+                        height: 104
+                        radius: 14
+                        bg_color: 0x1A1C22
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        widgets:
+                          - image: {id: img_rec_2, clickable: false, align: CENTER, src: rec_cover_img_2, hidden: true}
+                        on_click:
+                          - script.execute: {id: media_play_uri, uri: !lambda 'return id(rec_ids)[2].empty() ? std::string("") : std::string("spotify:track:") + id(rec_ids)[2];'}
+                    - button:
+                        id: rec_tile_3
+                        width: 104
+                        height: 104
+                        radius: 14
+                        bg_color: 0x1A1C22
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        widgets:
+                          - image: {id: img_rec_3, clickable: false, align: CENTER, src: rec_cover_img_3, hidden: true}
+                        on_click:
+                          - script.execute: {id: media_play_uri, uri: !lambda 'return id(rec_ids)[3].empty() ? std::string("") : std::string("spotify:track:") + id(rec_ids)[3];'}
+
+        # ───────────── CONTROLLING ▾ chip (Approach A —  4c) ─────────────
+        # Shows the GROUP this panel controls (honest multi-group hero); tap → Rooms
+        # Overview to switch. Declared before the overlay so the overlay covers it
+        # when controls are up; sits above np_tap otherwise. Hidden in IDLE by
+        # np_refresh; label set by mr_refresh from the controlled group.
+        - button:
+            id: np_ctrl_chip
+            align: TOP_LEFT
+            x: 24
+            y: 84
+            height: 48
+            width: SIZE_CONTENT
+            radius: 24
+            bg_color: 0x1C1C1E
+            bg_opa: COVER
+            border_width: 0
+            pad_left: 14
+            pad_right: 14
+            scrollable: false
+            hidden: true
+            widgets:
+              - obj:
+                  align: CENTER
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 8}
+                  widgets:
+                    - label: {id: np_ctrl_glyph, clickable: false, text: $mdi_speaker_multiple, text_font: mdi_main_28, text_color: ep_blue}
+                    - label: {id: np_ctrl_label, clickable: false, text: "—", text_font: oswald_20, text_color: white}
+                    - label: {clickable: false, text: $mdi_chevron_down, text_font: mdi_main_28, text_color: gray400}
+            on_click:
+              - lvgl.page.show: multiroom_page
+
+        # ───────────── TAP OVERLAY (controls; hidden until tapped) ─────────────
+        - obj:
+            id: np_overlay
+            hidden: true
+            align: TOP_LEFT
+            x: 0
+            y: 0
+            width: 720
+            height: 720
+            bg_color: 0x08090B
+            bg_opa: 62%
+            border_width: 0
+            radius: 0
+            pad_all: 0
+            scrollable: false
+            # A tap on the dimmed backdrop dismisses the overlay.
+            on_click:
+              - lambda: |-
+                  id(np_overlay_on) = false;
+                  lv_obj_add_flag(id(np_overlay), LV_OBJ_FLAG_HIDDEN);
+            widgets:
+              # Transport row — shuffle · prev · play/pause · next · repeat.
+              - obj:
+                  clickable: false
+                  align: TOP_MID
+                  y: 300
+                  width: 600
+                  height: 120
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 24}
+                  widgets:
+                    - button:
+                        id: np_btn_shuffle
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: very_dark_gray
+                        border_width: 1
+                        border_color: gray700
+                        pad_all: 0
+                        widgets:
+                          - label: {id: np_ic_shuffle, clickable: false, align: CENTER, text: $mdi_shuffle, text_font: mdi_np_44, text_color: gray400}
+                        on_click:
+                          - homeassistant.action:
+                              action: media_player.shuffle_set
+                              variables: {tgt: 'return id(media_active_target);'}
+                              data_template: {entity_id: "{{ tgt }}", shuffle: "true"}
+                    - button:
+                        id: np_btn_prev
+                        width: 84
+                        height: 84
+                        radius: 42
+                        bg_color: very_dark_gray
+                        border_width: 1
+                        border_color: gray700
+                        pad_all: 0
+                        widgets:
+                          - label: {clickable: false, align: CENTER, text: $mdi_skip_previous, text_font: mdi_np_44, text_color: white}
+                        on_click:
+                          - script.execute: npd_prev
+                    - button:
+                        id: np_btn_play
+                        width: 112
+                        height: 112
+                        radius: 56
+                        bg_color: ep_green
+                        border_width: 0
+                        pad_all: 0
+                        widgets:
+                          - label: {id: np_ic_play, clickable: false, align: CENTER, text: $mdi_pause, text_font: mdi_np_44, text_color: black}
+                        on_click:
+                          - script.execute: npd_play
+                    - button:
+                        id: np_btn_next
+                        width: 84
+                        height: 84
+                        radius: 42
+                        bg_color: very_dark_gray
+                        border_width: 1
+                        border_color: gray700
+                        pad_all: 0
+                        widgets:
+                          - label: {clickable: false, align: CENTER, text: $mdi_skip_next, text_font: mdi_np_44, text_color: white}
+                        on_click:
+                          - script.execute: npd_next
+                    - button:
+                        id: np_btn_repeat
+                        width: 64
+                        height: 64
+                        radius: 32
+                        bg_color: very_dark_gray
+                        border_width: 1
+                        border_color: gray700
+                        pad_all: 0
+                        widgets:
+                          - label: {id: np_ic_repeat, clickable: false, align: CENTER, text: $mdi_repeat_off, text_font: mdi_np_44, text_color: gray400}
+                        on_click:
+                          - homeassistant.action:
+                              action: media_player.repeat_set
+                              variables: {tgt: 'return id(media_active_target);'}
+                              data_template: {entity_id: "{{ tgt }}", repeat: "all"}
+              # Quick-launch row — Pick · Browse · Rooms (same brightness as transport).
+              - obj:
+                  clickable: false
+                  align: TOP_MID
+                  y: 448
+                  width: 640
+                  height: 62
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 18}
+                  widgets:
+                    - button:
+                        id: np_q_pick
+                        width: SIZE_CONTENT
+                        height: 62
+                        radius: 16
+                        bg_color: very_dark_gray
+                        border_width: 1
+                        border_color: gray700
+                        pad_left: 22
+                        pad_right: 22
+                        pad_top: 0
+                        pad_bottom: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_playlist_music, text_font: mdi_main_28, text_color: ep_green}
+                          - label: {clickable: false, text: "Pick", text_font: oswald_24, text_color: white}
+                        on_click:
+                          - lambda: 'id(np_overlay_on) = false;'
+                          - lvgl.widget.hide: np_overlay
+                          - script.execute: takeover_enter
+                          - lvgl.page.show: pick_music_page
+                    - button:
+                        id: np_q_browse
+                        width: SIZE_CONTENT
+                        height: 62
+                        radius: 16
+                        bg_color: very_dark_gray
+                        border_width: 1
+                        border_color: gray700
+                        pad_left: 22
+                        pad_right: 22
+                        pad_top: 0
+                        pad_bottom: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_compass, text_font: mdi_main_28, text_color: ep_green}
+                          - label: {clickable: false, text: "Browse", text_font: oswald_24, text_color: white}
+                        on_click:
+                          - lambda: 'id(np_overlay_on) = false;'
+                          - lvgl.widget.hide: np_overlay
+                          - script.execute: takeover_enter
+                          - lvgl.page.show: browse_page
+                    - button:
+                        id: np_q_rooms
+                        width: SIZE_CONTENT
+                        height: 62
+                        radius: 16
+                        bg_color: very_dark_gray
+                        border_width: 1
+                        border_color: gray700
+                        pad_left: 22
+                        pad_right: 22
+                        pad_top: 0
+                        pad_bottom: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_account_group, text_font: mdi_main_28, text_color: ep_green}
+                          - label: {clickable: false, text: "Groups", text_font: oswald_24, text_color: white}
+                        on_click:
+                          # Edit membership from Now Playing → staged grouping modal
+                          #: the Rooms Overview grid is reached via the chip.
+                          - lambda: 'id(np_overlay_on) = false;'
+                          - lvgl.widget.hide: np_overlay
+                          # Pre-stage the active room's CURRENT group so the modal
+                          # opens as an editor of the existing group (otg follow-up).
+                          - script.execute: prestage_from_topology
+                          - lvgl.widget.show: popup_scrim
+                          - lvgl.widget.show: rooms_modal
+              # Vertical volume slider (cyb) — right edge; LVGL renders vertical when
+              # height > width. Position may need on-device nudging vs the controls.
+              - slider:
+                  id: np_vol
+                  align: RIGHT_MID
+                  x: -28
+                  y: -10
+                  width: 64
+                  height: 360
+                  min_value: 0
+                  max_value: 100
+                  value: 30
+                  radius: 24
+                  bg_color: 0x2E3138
+                  indicator: {bg_color: ep_green}
+                  # Bigger knob (pad widens it past the 48px track) for an easy grab.
+                  knob: {bg_color: white, pad_all: 6}
+                  # Isolate the drag from the page swipe-nav: without this, dragging the
+                  # slider up/down bubbles the gesture to the page and changes screen
+                  # (nav2d on_swipe_up/down). Cleared on load below.
+                  on_value:
+                    # mark user interaction (fires throughout the drag) so the
+                    # device→slider sync below holds off while the user is adjusting
+                    - lambda: 'id(vol_user_ms) = millis();'
+                  on_release:
+                    - lambda: 'id(vol_user_ms) = millis();'
+                    - homeassistant.action:
+                        action: media_player.volume_set
+                        variables:
+                          vol: 'return ((float) lv_slider_get_value(id(np_vol))) / 100.0f;'
+                          tgt: 'return id(media_active_target);'
+                        data_template: {entity_id: "{{ tgt }}", volume_level: "{{ vol }}"}
+              # Hint line.
+              - label: {clickable: false, align: BOTTOM_MID, y: -96, text: "double-tap = play / pause · tap to dismiss", text_font: oswald_18, text_color: gray400}
+
+    # ═════════════════════ MULTI-ROOM (.2) ═════════════════════
+    - id: multiroom_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml   # 2D nav
+      on_load:
+        - script.execute: {id: nav_arrive, f: 0, p: 1}   # MAIN page 1
+        - lambda: 'id(multiroom_active) = true;'
+        - script.execute: mr_refresh
+      on_unload:
+        - lambda: 'id(multiroom_active) = false;'
+      widgets:
+        # ───────────── ROOMS OVERVIEW GRID (Approach B —  4b) ─────────────
+        # 2×3 card grid fills the page (retires the old rows + mini-dock / h99
+        # overlap). gc0 = the group this panel controls (album art + cyan ring);
+        # gc1..gc4 = other playing groups then idle rooms (glyph + colour); gc_edit
+        # opens the staged Rooms grouping modal. All painted by mr_refresh; tap a
+        # card to switch which group the panel controls (gc_tap → gc_coord[slot]).
+        - obj:
+            clickable: false
+            align: TOP_LEFT
+            x: 16
+            y: 80
+            width: 688
+            height: 456
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1), FR(1)]
+              pad_column: 12
+              pad_row: 12
+            widgets:
+              # gc0 — controlled card (cyan ring; glyph + title/sub like the rest).
+              - button:
+                  id: gc0
+                  grid_cell_column_pos: 0
+                  grid_cell_row_pos: 0
+                  grid_cell_x_align: STRETCH
+                  grid_cell_y_align: STRETCH
+                  bg_color: gray900
+                  radius: 16
+                  border_width: 3
+                  border_color: ep_blue
+                  pad_all: 10
+                  scrollable: false
+                  hidden: true
+                  widgets:
+                    - label: {id: gc0_glyph, clickable: false, align: TOP_LEFT, text: $mdi_speaker_multiple, text_font: mdi_main_28, text_color: ep_green}
+                    - label: {id: gc0_title, clickable: false, align: TOP_LEFT, x: 44, y: 0,  text: "", text_font: oswald_20, text_color: white,  width: 252, long_mode: DOT}
+                    - label: {id: gc0_sub,   clickable: false, align: TOP_LEFT, x: 44, y: 28, text: "", text_font: oswald_14, text_color: gray400, width: 252, long_mode: DOT}
+                    - bar:   {id: gc0_vol,   clickable: false, align: BOTTOM_MID, y: -2, width: 296, height: 6, min_value: 0, max_value: 100, value: 0, indicator: {bg_color: ep_blue}}
+                  on_click:
+                    - script.execute: {id: gc_tap, slot: 0}
+              - !include {file: widgets/group_card.yaml, vars: {uid: gc1, col: 1, row: 0, slot: 1}}
+              - !include {file: widgets/group_card.yaml, vars: {uid: gc2, col: 0, row: 1, slot: 2}}
+              - !include {file: widgets/group_card.yaml, vars: {uid: gc3, col: 1, row: 1, slot: 3}}
+              - !include {file: widgets/group_card.yaml, vars: {uid: gc4, col: 0, row: 2, slot: 4}}
+              - !include {file: widgets/group_card.yaml, vars: {uid: gc5, col: 1, row: 2, slot: 5}}
+
+        # Empty state — shown by mr_refresh when nothing is playing anywhere
+        # (sibling of the grid so it doesn't consume a grid cell).
+        - label:
+            id: gc_empty
+            clickable: false
+            hidden: true
+            align: TOP_MID
+            y: 260
+            text: "Nothing playing"
+            text_font: oswald_24
+            text_color: gray500
+
+        # ───────────── FOLLOW ME toggle ( 4d) ─────────────
+        # Global mode (input_boolean.sonos_follow_me): OFF = music stays where
+        # started; ON = the stream follows you room→room (NR flow). Tap toggles HA;
+        # follow_me_state (binary_sensor) repaints the pill. Inner obj centres the
+        # row (flex-on-button is unreliable — centre via an auto-sized child).
+        - button:
+            id: btn_follow_me
+            align: BOTTOM_MID
+            y: -24
+            width: 380
+            height: 60
+            radius: 30
+            bg_color: gray900
+            border_width: 2
+            border_color: gray700
+            scrollable: false
+            widgets:
+              - obj:
+                  clickable: false   # let touches fall through to the button (other pills do this)
+                  align: CENTER
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 12}
+                  widgets:
+                    - label: {id: fm_glyph,  clickable: false, text: $mdi_walk, text_font: mdi_main_28, text_color: gray500}
+                    - label: {id: fm_label,  clickable: false, text: "Follow Me", text_font: oswald_24, text_color: white}
+                    - label: {id: fm_status, clickable: false, text: "OFF", text_font: oswald_20, text_color: gray500}
+            on_click:
+              - homeassistant.action:
+                  action: input_boolean.toggle
+                  data: {entity_id: input_boolean.sonos_follow_me}
+
+# ───── Follow Me state mirror ( 4d): repaint the pill from HA ─────
+binary_sensor:
+  - platform: homeassistant
+    id: follow_me_state
+    entity_id: input_boolean.sonos_follow_me
+    on_state:
+      - lambda: |-
+          bool on = x;
+          lv_obj_set_style_text_color(id(fm_glyph),  lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
+          lv_obj_set_style_text_color(id(fm_status), lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
+          lv_label_set_text(id(fm_status), on ? "ON" : "OFF");
+          lv_obj_set_style_border_color(id(btn_follow_me), lv_color_hex(on ? 0x01B4DE : 0x404040), 0);
+
+# ───── Now-Playing / Multi-Room refresh (1s) ─────
+# np_refresh/mr_refresh early-return unless their page is showing (main_active /
+# multiroom_active gates); adopt_playing_group stays UNgated — it maintains the
+# controlled-target state, not widgets.
+interval:
+  - interval: 1s
+    then:
+      - script.execute: np_refresh
+      - script.execute: mr_refresh
+      # .7: follow the actively-playing group when the current target is idle.
+      - script.execute: adopt_playing_group
+
+script:
+  # ───────────── Now-Playing state machine + presentation (.1) ─────────────
+  # Reads the M2 now-playing sensors (.state) and switches IDLE ↔ PLAYING, paints
+  # the source/title/artist block + the overlay transport glyph + the play button.
+  - id: np_refresh
+    then:
+      - lambda: |-
+          // Repaint only while main_page is showing (page-energy gating pattern);
+          // on_load runs this script so the first paint is immediate.
+          if (!id(main_active)) return;
+
+          bool playing = false;
+          std::string st = id(media_state).state;
+          // "playing"/"paused" = there is a now-playing surface; idle/off/unknown = IDLE
+          if (st == "playing" || st == "paused") playing = true;
+          id(np_is_playing) = playing;
+
+          // Toggle the two surfaces.
+          if (playing) {
+            lv_obj_add_flag(id(np_idle), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(np_label), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(np_ctrl_chip), LV_OBJ_FLAG_HIDDEN);   // Controlling ▾ chip (4c)
+          } else {
+            lv_obj_clear_flag(id(np_idle), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(np_label), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(np_ctrl_chip), LV_OBJ_FLAG_HIDDEN);
+            // dropping out of PLAYING also dismisses the overlay
+            id(np_overlay_on) = false;
+            lv_obj_add_flag(id(np_overlay), LV_OBJ_FLAG_HIDDEN);
+          }
+
+          // Source room · title · artist (PLAYING label block).
+          {
+            std::string room = id(media_device_name).state;
+            for (auto &c : room) c = toupper((unsigned char)c);
+            lv_label_set_text(id(np_src), room.c_str());
+            std::string t = id(media_title).state;
+            lv_label_set_text(id(np_title), t.empty() ? "—" : t.c_str());
+            lv_label_set_text(id(np_artist), id(media_artist).state.c_str());
+          }
+
+          // Overlay play/pause glyph mirrors the live state.
+          lv_label_set_text(id(np_ic_play), (st == "playing") ? "$mdi_pause" : "$mdi_play");
+
+          // Two-way volume sync: reflect the device's live volume on the
+          // slider — but NOT while/just-after the user drags it (2s guard), so an
+          // in-flight device echo can't yank the knob. Snaps to truth otherwise, so
+          // a laggy/failed volume_set is self-correcting.
+          if (millis() - id(vol_user_ms) > 2000) {
+            float v = id(media_volume).state;        // 0..1
+            if (!std::isnan(v) && v >= 0.0f && v <= 1.0f)
+              lv_slider_set_value(id(np_vol), (int)(v * 100.0f + 0.5f), LV_ANIM_OFF);
+          }
+
+  # ───────────── Multi-Room refresh (.2 /  4b) ─────────────
+  # Paints the Rooms Overview 2×3 card grid (gc0..gc5) from the live group blobs
+  # (page-media sonos_g[], per-group "<coord>|<state>|<vol>|<label>|<members>|
+  # <title>|<artist>|<art>") plus idle rooms (room_state[]): the controlled group
+  # first (gc0, cyan ring), then other playing groups, then idle rooms, then the
+  # gc_edit card. Also paints the hero's "Controlling ▾" chip label
+  # (np_ctrl_label — lives on main_page, so this script matters there too).
+  # gc_coord[] records each card's coordinator for gc_tap (switch control).
+  - id: mr_refresh
+    then:
+      - lambda: |-
+          // Repaint only while a page it paints is showing: the gc grid lives on
+          // multiroom_page, the "Controlling ▾" chip (np_ctrl_label) on main_page.
+          // Both pages' on_load run this script so the first paint is immediate.
+          if (!id(main_active) && !id(multiroom_active)) return;
+
+          // ── Rooms Overview grid ( 4b): paint gc0..gc4 from the live group
+          // blobs (page-media sonos_g[]) + idle rooms (room_state[]), controlled
+          // group first (gc0, cyan ring). gc_coord[] records each card's
+          // coordinator for gc_tap (switch). ──
+          struct G { std::string coord, state, label, members, title, artist; int vol; };
+          std::vector<G> groups;
+          for (int i = 0; i < 4; i++) {
+            std::string s = id(sonos_g)[i];
+            if (s.empty()) continue;
+            std::vector<std::string> f; size_t p = 0;
+            while (true) { size_t q = s.find('|', p);
+              f.push_back(q == std::string::npos ? s.substr(p) : s.substr(p, q - p));
+              if (q == std::string::npos) break; p = q + 1; }
+            if (f.size() < 8) continue;
+            G g; g.coord=f[0]; g.state=f[1]; g.vol=atoi(f[2].c_str());
+            g.label=f[3]; g.members=f[4]; g.title=f[5]; g.artist=f[6];   // f[7] (art URL) unused here
+            groups.push_back(g);
+          }
+          // controlled group = the one holding the active target room
+          std::string tgt = id(media_active_target);
+          std::string tslug = tgt; { size_t d = tslug.rfind('.'); if (d != std::string::npos) tslug = tslug.substr(d + 1); }
+          // Whole-token member match — members is comma- or space-joined slugs
+          // (page-media contract), and a substring find would let "kitchen"
+          // match "kitchen_2".
+          auto has_member = [](const std::string &ms, const std::string &slug) {
+            std::string tok;
+            for (size_t i = 0; i <= ms.size(); i++) {
+              char ch = (i < ms.size()) ? ms[i] : ',';
+              if (ch == ',' || ch == ' ') { if (!tok.empty() && tok == slug) return true; tok.clear(); }
+              else tok += ch;
+            }
+            return false;
+          };
+          int ctrl = -1;
+          for (size_t i = 0; i < groups.size(); i++)
+            if (groups[i].coord == tslug || has_member(groups[i].members, tslug)) { ctrl = (int)i; break; }
+          std::vector<int> order;
+          if (ctrl >= 0) order.push_back(ctrl);
+          for (size_t i = 0; i < groups.size(); i++) if ((int)i != ctrl) order.push_back((int)i);
+
+          lv_obj_t* cards[6]  = { id(gc0), id(gc1), id(gc2), id(gc3), id(gc4), id(gc5) };
+          lv_obj_t* glyphs[6] = { id(gc0_glyph), id(gc1_glyph), id(gc2_glyph), id(gc3_glyph), id(gc4_glyph), id(gc5_glyph) };
+          lv_obj_t* titles[6] = { id(gc0_title), id(gc1_title), id(gc2_title), id(gc3_title), id(gc4_title), id(gc5_title) };
+          lv_obj_t* subs[6]   = { id(gc0_sub), id(gc1_sub), id(gc2_sub), id(gc3_sub), id(gc4_sub), id(gc5_sub) };
+          lv_obj_t* vols[6]   = { id(gc0_vol), id(gc1_vol), id(gc2_vol), id(gc3_vol), id(gc4_vol), id(gc5_vol) };
+          for (int i = 0; i < 6; i++) id(gc_coord)[i] = "";
+          int slot = 0;
+
+          // ACTIVE (playing) speakers/groups ONLY — controlled first. Grouped rooms
+          // collapse to one card (g* emits only coordinators). Idle/paused rooms are
+          // NOT shown (the grid is "what's playing now"); tap a card to control it +
+          // jump to Now Playing (gc_tap). Membership is edited from Now Playing.
+          for (size_t oi = 0; oi < order.size() && slot < 6; oi++, slot++) {
+            G &g = groups[order[oi]];
+            id(gc_coord)[slot] = std::string("media_player.") + g.coord;
+            lv_label_set_text(titles[slot], g.label.c_str());
+            std::string sub = g.title.empty() ? std::string("Playing")
+                              : (g.title + (g.artist.empty() ? "" : (" · " + g.artist)));
+            lv_label_set_text(subs[slot], sub.c_str());
+            lv_obj_set_style_text_color(glyphs[slot], lv_color_hex(0x7ACF38), 0);   // playing = green
+            lv_bar_set_value(vols[slot], g.vol < 0 ? 0 : g.vol, LV_ANIM_OFF);
+            lv_obj_set_style_border_width(cards[slot], (slot == 0 && ctrl >= 0) ? 3 : 0, 0);
+            lv_obj_clear_flag(cards[slot], LV_OBJ_FLAG_HIDDEN);
+          }
+          for (int i = slot; i < 6; i++) lv_obj_add_flag(cards[i], LV_OBJ_FLAG_HIDDEN);
+
+          // Empty state — nothing playing anywhere.
+          if (slot == 0) lv_obj_clear_flag(id(gc_empty), LV_OBJ_FLAG_HIDDEN);
+          else           lv_obj_add_flag(id(gc_empty), LV_OBJ_FLAG_HIDDEN);
+
+          // Hero "Controlling ▾" chip label (4c) = the controlled group, else the room.
+          if (ctrl >= 0) lv_label_set_text(id(np_ctrl_label), groups[ctrl].label.c_str());
+          else { std::string r = id(media_device_name).state; lv_label_set_text(id(np_ctrl_label), r.empty() ? "—" : r.c_str()); }
+
+  # ───────────── Rooms Overview: tap a card to SWITCH controlled group ( 4b) ─────────────
+  # gc_coord[slot] (set by mr_refresh) = the coordinator entity behind the tapped
+  # card, or "" for an idle/empty card (no-op). Switching = set active_media_player
+  # + media_active_target and persist via ${active_player_helper}; the
+  # mirror sensors then repaint the hero. (Replaces the old per-row rr_*_toggle/vol.)
+  - id: gc_tap
+    parameters:
+      slot: int
+    then:
+      - if:
+          condition:
+            lambda: 'return slot >= 0 && slot <= 5 && !id(gc_coord)[slot].empty();'
+          then:
+            - lambda: |-
+                id(active_media_player) = id(gc_coord)[slot];
+                id(media_active_target) = id(gc_coord)[slot];
+                id(last_manual_ms) = millis();   // .7: explicit pick → hold auto-follow
+            - homeassistant.action:
+                action: input_text.set_value
+                data_template:
+                  entity_id: ${active_player_helper}
+                  value: "{{ tgt }}"
+                variables:
+                  tgt: 'return id(active_media_player);'
+            - script.execute: mr_refresh
+            # Take control + jump to Now Playing for transport + grouping.
+            - lvgl.page.show: main_page

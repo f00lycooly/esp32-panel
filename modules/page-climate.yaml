@@ -1,0 +1,1113 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# page-climate.yaml — CLIMATE function package
+#
+# Owns the two CLIMATE swipe pages (F1 in the 2D nav, contract §1):
+#   • climate_page  (F1 P0) — Room dial: open-bottom arc (~280°), draggable
+#     target knob → climate.set_temperature, current-temp marker on the scale,
+#     centre state glyph (flame RED heating / grey idle), mode dropdown in the
+#     cut-out (AUTO/BOOST/AWAY/OFF). .1.
+#   • hotwater_page (F1 P1) — Hot Water dial: DISPLAY-ONLY tank dial (35–65,
+#     set on the Vaillant controller), centre boiler glyph, BOOST CTA in the
+#     cut-out → switch.home_domestic_hot_water_0_boost. .2.
+# Both carry the COMMON bottom bar (.3): Outdoor · Humidity · COP · Bar
+# (4× stat_cell_inline in the shell 4-zone bottom bar).
+#
+# Supersedes the old climate pilot (current-temp + stepper + 4-cell footer).
+# The standard top bar (battery · clock · cog) is the top_layer singleton in
+# modules/top-bar.yaml — content lives strictly below y=72.
+#
+# Entity ids verified against live HA 2026-06-19 (see CLAUDE.md API access).
+# Vaillant climate min/max 7/35 step 0.5; preset_modes [boost,none,away,
+# system_off,ventilation_boost]; hvac_action drives the heating glyph. DHW
+# water_heater min/max 35/70 (dial scaled 35–70, full entity range).
+#
+# Sole consumer of the shared widgets mode_dropdown + state_glyph (ownership
+# §3) — their props are exercised here for the first time.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoints. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_climate: !include capture/${capture_mode}/climate.yaml
+
+# NOTE: the climate/DHW entity substitutions consumed below (climate_entity,
+# climate_min_temp/max_temp, dhw_*, clim_*) are defined in user-config.yaml
+# (see user-config.yaml.example, Climate section) — this module carries no
+# site defaults. climate_min_temp/max_temp MUST agree with the entity's
+# min_temp/max_temp (a setpoint below min_temp is a rejected/garbage write,
+# so clim_room_commit clamps to this floor).
+
+substitutions:
+  # ── Page-local MDI glyphs (UTF-8 literals for materialdesignicons v7.4.47).
+  # Defined here so the page is self-contained and does NOT depend on the library
+  # glyph-substitution map carrying these names. Uniquely prefixed (mdi_c_*) so
+  # they can never collide with library $mdi_* substitutions. Each is listed in
+  # the page-local font glyphs: blocks below.
+  mdi_c_fire: "󰈸"               # F0238 heating / boost
+  mdi_c_snowflake_off: "󱓣"      # F14E3 idle (not heating)
+  mdi_c_water_boiler: "󰾒"       # F0F92 DHW centre glyph (mp7: was F07E1 = nintendo-switch)
+  mdi_c_thermometer: "󰔏"        # F050F current-temp marker (room)
+  mdi_c_thermometer_water: "󱨑"  # F1A11 current-temp marker (tank)
+  mdi_c_leaf: "󰌪"               # F032A COP
+  mdi_c_gauge: "󰊛"              # F029B water pressure
+  mdi_c_weather_partly_cloudy: "󰖕"  # F0595 outdoor
+  mdi_c_water_percent: "󰖎"      # F058E humidity
+  mdi_c_calendar_clock: "󰃰"  # F00F0 AUTO mode pill (schedule)
+  mdi_c_power: "󰐥"           # F0425 OFF mode pill
+  mdi_c_hand: "󰹇"           # F0E47 MANUAL mode pill (hand control)
+  mdi_c_chevron_down: "󰅀"   # F0140 mode-dropdown indicator chevron
+
+globals:
+  # Live target setpoints, kept in sync by the HA sensors so the dial/labels can
+  # read them without a round-trip. Room is writable (drag); tank is display-only.
+  - {id: clim_target, type: float, restore_value: false, initial_value: "20.0"}
+  - {id: clim_current, type: float, restore_value: false, initial_value: "20.0"}
+  - {id: clim_heating, type: bool, restore_value: false, initial_value: "false"}
+  - {id: dhw_target, type: float, restore_value: false, initial_value: "50.0"}
+  - {id: dhw_current, type: float, restore_value: false, initial_value: "48.0"}
+  # Guards the arc on_value so programmatic lv_arc_set_value (from a sensor
+  # refresh) does not re-trigger a set_temperature write loop.
+  - {id: clim_arc_sync, type: bool, restore_value: false, initial_value: "false"}
+  # True only when the device reports a real manual setpoint (temperature attr
+  # >= min_temp). In auto/schedule mode the Vaillant reports temperature=0.0 (a
+  # valid float, NOT NaN) — its normal "no active manual setpoint" state. When
+  # false the dial baselines off current_temperature so the arc/label stay sane
+  # and a user drag vetoes from a correct baseline, never from 0/min.
+  - {id: clim_has_setpoint, type: bool, restore_value: false, initial_value: "false"}
+  # Guards the mode dropdown's on_value so programmatically mirroring device
+  # state into the selection cannot loop back into a write. (Belt-and-braces:
+  # ESPHome's LvDropdownType::set_selected_index calls raw lv_dropdown_set_selected,
+  # which does not emit LV_EVENT_VALUE_CHANGED, so on_value would not re-fire
+  # anyway — but the guard documents intent and survives an LVGL behaviour change.)
+  - {id: clim_mode_sync, type: bool, restore_value: false, initial_value: "false"}
+  # Latest device hvac_mode (state string) + preset_mode, mirrored back into the
+  # mode dropdown selection by clim_mode_resync so it never lies "AUTO".
+  - {id: clim_hvac_mode, type: std::string, restore_value: false, initial_value: '"auto"'}
+  - {id: clim_preset_mode, type: std::string, restore_value: false, initial_value: '"none"'}
+  #  control model. clim_mode: 0 AUTO(Time Controlled) / 1 MANUAL(heat_cool) / 2 OFF.
+  # Dial is READ-ONLY unless MANUAL or a quick veto (boost) is active.
+  - {id: clim_mode, type: int, restore_value: false, initial_value: "0"}
+  - {id: clim_boosting, type: bool, restore_value: false, initial_value: "false"}
+  - {id: clim_user_editing, type: bool, restore_value: false, initial_value: "false"}
+  # : true while the finger is physically on the arc. Brackets a drag so the
+  # laggy Vaillant temperature echoes can NEVER release the edit-lock or repaint
+  # the arc mid-drag (the stale-echo-vs-finger jumping loop). Released on_release.
+  - {id: clim_arc_pressed, type: bool, restore_value: false, initial_value: "false"}
+  # last raw device setpoint (temperature attr), cached on EVERY echo even
+  # while the edit-lock is held, so cancelling Boost can resync the dial to the
+  # reverted setpoint immediately instead of waiting out the 60s lock.
+  - {id: clim_last_dev_temp, type: float, restore_value: false, initial_value: "0"}
+  - {id: clim_veto_dur, type: float, restore_value: false, initial_value: "3.0"}
+  - {id: clim_veto_until, type: std::string, restore_value: false, initial_value: '""'}
+  # Hot water: dhw_mode 0 AUTO(Time Controlled)/1 MANUAL/2 OFF. Dial live
+  # only in MANUAL. dhw_boosting = Cylinder Boost active.
+  - {id: dhw_mode, type: int, restore_value: false, initial_value: "0"}
+  - {id: dhw_boosting, type: bool, restore_value: false, initial_value: "false"}
+  - {id: dhw_user_editing, type: bool, restore_value: false, initial_value: "false"}
+
+# ── Dial geometry constants (mirror mockups/04-climate-dials.html dial()) ──
+#   Arc box 464×464, open-bottom. LVGL angles: 0°=3o'clock, CW, 90°=6o'clock.
+#   Scale min at 130° (bottom-left) sweeping CW 280° to 410°(=50°, bottom-right);
+#   80° opening centred on the bottom holds the mode dropdown / BOOST CTA.
+#   Arc value is temp×10 (0.1° granularity) so 0.5° steps snap cleanly.
+
+font:
+  # Centre state glyph (flame / boiler / idle) — large.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_clim_56
+    size: 56
+    bpp: 4
+    glyphs:
+      - $mdi_c_fire
+      - $mdi_c_snowflake_off
+      - $mdi_c_water_boiler
+  # Current-temp marker glyph (sits in the small circle on the scale).
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_clim_22
+    size: 22
+    bpp: 4
+    glyphs:
+      - $mdi_c_thermometer
+      - $mdi_c_thermometer_water
+  # Cut-out CTA glyph (BOOST flame) + bottom-bar stat glyphs. The mode dropdown
+  # is a text-only lv_dropdown (no per-row glyphs), so the mockup's per-mode icons
+  # are not rendered here.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_clim_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_c_fire
+      - $mdi_c_leaf
+      - $mdi_c_gauge
+      - $mdi_c_weather_partly_cloudy
+      - $mdi_c_water_percent
+      - $mdi_c_calendar_clock
+      - $mdi_c_power
+      - $mdi_c_hand
+      - $mdi_c_chevron_down
+
+sensor:
+  # ───── Room circuit (climate_page) ─────
+  - platform: homeassistant
+    id: clim_current_temp
+    entity_id: $climate_entity
+    attribute: current_temperature
+    on_value:
+      - lambda: |-
+          id(clim_current) = isnan(x) ? 0.0f : x;
+          // When the device has no active manual setpoint (auto/schedule), the
+          // dial baselines off current_temperature — keep clim_target and the arc
+          // tracking the live room temp so the ring doesn't go stale.
+          if (id(clim_mode) == 0 && !id(clim_boosting) && !id(clim_user_editing) && !id(clim_has_setpoint)) {
+            id(clim_target) = id(clim_current);
+            const float MIN = $climate_min_temp;
+            float av = id(clim_target);
+            if (av < MIN) av = MIN;
+            if (av > (float)$climate_max_temp) av = $climate_max_temp;
+            id(clim_arc_sync) = true;
+            lv_arc_set_value(id(clim_room_arc), (int)lroundf(av * 10.0f));
+            id(clim_arc_sync) = false;
+          }
+      - script.execute: clim_room_refresh
+  - platform: homeassistant
+    id: clim_target_temp
+    entity_id: $climate_entity
+    attribute: temperature
+    on_value:
+      - lambda: |-
+          // In auto/schedule mode the Vaillant reports temperature=0.0 — a valid
+          // float (not NaN), its NORMAL "no manual setpoint" state. Treat any
+          // value below min_temp (covers 0.0) as "no active manual setpoint":
+          // do NOT push it to the arc/target (that would show 0.0°, pin the arc
+          // to its clamped min, flip the heating-fill logic, and let a drag/commit
+          // write a sub-min, rejected setpoint).
+          const float MIN = $climate_min_temp;
+          // Edit lock: while editing, ignore stale echoes; accept (and unlock) only
+          // when HA confirms our value (the Vaillant lags several seconds on a write).
+          // : while the finger is down, ALWAYS ignore echoes — never release
+          // the lock on value proximity and never repaint the arc. Only once the
+          // touch is released does the confirm-based unlock apply (HA caught up to
+          // our value). This kills the stale-echo-vs-finger jump: a mid-drag echo
+          // that happens to match the instantaneous target can no longer open the
+          // lock and let the next stale echo snap the knob back.
+          // always cache the raw device setpoint, even while locked, so a
+          // Boost-cancel can resync from it without waiting for the next echo.
+          id(clim_last_dev_temp) = x;
+          if (id(clim_user_editing)) {
+            if (!id(clim_arc_pressed) && !isnan(x) && x >= MIN &&
+                fabsf(x - id(clim_target)) < 0.25f) id(clim_user_editing) = false;
+            else return;
+          }
+          if (isnan(x) || x < MIN) {
+            id(clim_has_setpoint) = false;
+            // Baseline the target off the live room temperature so the arc and a
+            // subsequent user drag start from a sane value, not 0/min.
+            id(clim_target) = id(clim_current);
+          } else {
+            id(clim_has_setpoint) = true;
+            id(clim_target) = x;
+          }
+          // Push the (sane) baseline onto the draggable arc WITHOUT re-firing a
+          // write. Clamp into the arc's range so a current-temp baseline above
+          // max still lands in-range.
+          float av = id(clim_target);
+          if (av < MIN) av = MIN;
+          if (av > (float)$climate_max_temp) av = $climate_max_temp;
+          id(clim_arc_sync) = true;
+          lv_arc_set_value(id(clim_room_arc), (int)lroundf(av * 10.0f));
+          id(clim_arc_sync) = false;
+      - script.execute: clim_room_refresh
+
+  # ───── Hot water (hotwater_page) — display-only ─────
+  - platform: homeassistant
+    id: dhw_tank_temp
+    entity_id: $dhw_tank_temp_entity
+    on_value:
+      - lambda: 'id(dhw_current) = isnan(x) ? 0.0f : x;'
+      - script.execute: clim_dhw_refresh
+  - platform: homeassistant
+    id: dhw_setpoint
+    entity_id: $dhw_setpoint_entity
+    on_value:
+      - lambda: |-
+          if (id(dhw_user_editing)) {
+            if (!isnan(x) && fabsf(x - id(dhw_target)) < 0.25f) id(dhw_user_editing) = false;
+            else return;
+          }
+          id(dhw_target) = isnan(x) ? 50.0f : x;
+      - script.execute: clim_dhw_refresh
+
+  # ───── Common bottom bar (both pages — duplicated label ids per page) ─────
+  - platform: homeassistant
+    id: clim_outdoor
+    entity_id: $clim_outdoor_entity
+    on_value:
+      - lambda: |-
+          char b[12]; snprintf(b, sizeof(b), "%.1f°", isnan(x)?0.0f:x);
+          lv_label_set_text(id(lbl_room_outdoor), b);
+          lv_label_set_text(id(lbl_dhw_outdoor), b);
+  - platform: homeassistant
+    id: clim_humidity
+    entity_id: $clim_humidity_entity
+    on_value:
+      - lambda: |-
+          char b[12]; snprintf(b, sizeof(b), "%.0f%%", isnan(x)?0.0f:x);
+          lv_label_set_text(id(lbl_room_humidity), b);
+          lv_label_set_text(id(lbl_dhw_humidity), b);
+  - platform: homeassistant
+    id: clim_cop
+    entity_id: $clim_cop_entity
+    on_value:
+      - lambda: |-
+          char b[12]; snprintf(b, sizeof(b), "×%.1f", isnan(x)?0.0f:x);
+          lv_label_set_text(id(lbl_room_cop), b);
+          lv_label_set_text(id(lbl_dhw_cop), b);
+  - platform: homeassistant
+    id: clim_pressure
+    entity_id: $clim_pressure_entity
+    on_value:
+      - lambda: |-
+          char b[14]; snprintf(b, sizeof(b), "%.1f", isnan(x)?0.0f:x);
+          lv_label_set_text(id(lbl_room_pressure), b);
+          lv_label_set_text(id(lbl_dhw_pressure), b);
+  # Default duration for a quick veto (boost), from the Vaillant number entity.
+  - platform: homeassistant
+    id: clim_veto_dur_n
+    entity_id: $clim_qv_duration_entity
+    on_value:
+      - lambda: 'if (!isnan(x) && x > 0) id(clim_veto_dur) = x;'
+
+text_sensor:
+  # hvac_action drives the centre heating glyph (RED flame when heating).
+  - platform: homeassistant
+    id: clim_action
+    entity_id: $climate_entity
+    attribute: hvac_action
+    on_value:
+      - lambda: 'id(clim_heating) = (x == "heating");'
+      - script.execute: clim_room_refresh
+  # hvac_mode = the climate entity's MAIN state (no attribute): auto/heat_cool/off.
+  # Mirrored back into the dropdown so the selection tracks the device.
+  - platform: homeassistant
+    id: clim_hvac_state
+    entity_id: $climate_entity
+    on_value:
+      - lambda: |-
+          id(clim_hvac_mode) = x;
+          id(clim_mode) = (x == "heat_cool") ? 1 : (x == "off" ? 2 : 0);
+      - script.execute: clim_mode_resync
+      - script.execute: clim_gate_dial
+      - script.execute: clim_room_refresh
+  # preset_mode (boost/away/none/eco/...) — boost & away take priority over the
+  # hvac_mode when choosing the dropdown selection.
+  - platform: homeassistant
+    id: clim_preset_state
+    entity_id: $climate_entity
+    attribute: preset_mode
+    on_value:
+      - lambda: |-
+          bool was_boost = id(clim_boosting);
+          id(clim_preset_mode) = x;
+          id(clim_boosting) = (x == "boost");
+          // leaving Boost (e.g. Cancel) — the device setpoint is authoritative
+          // again. Drop the edit-lock and resync the dial to the reverted setpoint NOW,
+          // instead of holding the stale boost target for the 60s clim_edit_release.
+          if (was_boost && !id(clim_boosting)) {
+            id(clim_user_editing) = false;
+            id(clim_arc_pressed) = false;
+            const float MIN = $climate_min_temp;
+            float dv = id(clim_last_dev_temp);
+            if (!isnan(dv) && dv >= MIN) { id(clim_has_setpoint) = true;  id(clim_target) = dv; }
+            else                         { id(clim_has_setpoint) = false; id(clim_target) = id(clim_current); }
+            float av = id(clim_target);
+            if (av < MIN) av = MIN;
+            if (av > (float)$climate_max_temp) av = $climate_max_temp;
+            id(clim_arc_sync) = true;
+            lv_arc_set_value(id(clim_room_arc), (int)lroundf(av * 10.0f));
+            id(clim_arc_sync) = false;
+          }
+      - script.execute: clim_mode_resync
+      - script.execute: clim_gate_dial
+      - script.execute: clim_room_refresh
+  # Quick-veto end time (ISO datetime attr) -> "HH:MM" for the BOOST caption.
+  - platform: homeassistant
+    id: clim_veto_end
+    entity_id: $climate_entity
+    attribute: quick_veto_end_date_time
+    on_value:
+      - lambda: |-
+          if (x.size() >= 16 && x.substr(0,4) != "2019") id(clim_veto_until) = x.substr(11,5);
+          else id(clim_veto_until) = "";
+      - script.execute: clim_room_refresh
+  # DHW boost state — tints the BOOST CTA when active.
+  - platform: homeassistant
+    id: dhw_boost_state
+    entity_id: $dhw_boost_switch
+    on_value:
+      - lambda: 'id(dhw_boosting) = (x == "on");'
+      - script.execute: clim_dhw_refresh
+  # DHW operation mode (water_heater state) -> mode pill + dial gating.
+  - platform: homeassistant
+    id: dhw_op_mode
+    entity_id: $dhw_wh_entity
+    on_value:
+      - lambda: |-
+          // Authoritative for both dhw_mode and dhw_boosting — reset boosting when
+          // the operation leaves Cylinder Boost (.1; previously boosting stuck on).
+          if (x == "Cylinder Boost") { id(dhw_boosting) = true; }
+          else {
+            id(dhw_boosting) = false;
+            if (x == "Manual") id(dhw_mode) = 1;
+            else if (x == "Off") id(dhw_mode) = 2;
+            else id(dhw_mode) = 0;          // Time Controlled
+          }
+      - script.execute: dhw_mode_resync
+      - script.execute: dhw_gate_dial
+      - script.execute: clim_dhw_refresh
+
+script:
+  # Debounced writer: drag fires this with mode:restart, so only the value that
+  # survives ~700ms of no further drag is pushed to HA (Vaillant is slow; this
+  # avoids a write storm). .1.
+  - id: clim_room_commit
+    mode: restart
+    then:
+      - delay: 700ms
+      # Route by mode: MANUAL -> persistent manual setpoint; else (a live boost edit)
+      # -> quick veto for clim_veto_dur hours. Both clamp into [min,max].
+      - if:
+          condition: {lambda: 'return id(clim_mode) == 1;'}
+          then:
+            - logger.log: {format: "[climate] MANUAL setpoint %.1f", args: ['id(clim_target)']}
+            - homeassistant.action:
+                action: mypyllant.set_manual_mode_setpoint
+                data_template: {entity_id: $climate_entity, temperature: "{{ t }}", setpoint_type: heating}
+                variables:
+                  t: |-
+                    float v = id(clim_target);
+                    if (v < (float)$climate_min_temp) v = $climate_min_temp;
+                    if (v > (float)$climate_max_temp) v = $climate_max_temp;
+                    return v;
+          else:
+            - logger.log: {format: "[climate] quick veto %.1f for %.1fh", args: ['id(clim_target)', 'id(clim_veto_dur)']}
+            - homeassistant.action:
+                action: mypyllant.set_quick_veto
+                data_template: {entity_id: $climate_entity, temperature: "{{ t }}", duration_hours: "{{ d }}"}
+                variables:
+                  t: |-
+                    float v = id(clim_target);
+                    if (v < (float)$climate_min_temp) v = $climate_min_temp;
+                    if (v > (float)$climate_max_temp) v = $climate_max_temp;
+                    return v;
+                  d: 'return id(clim_veto_dur);' 
+
+  # Repaint the Room dial: target label, current marker position on the scale,
+  # indicator fill colour, centre state glyph. Pure presentation — no HA writes.
+  - id: clim_room_refresh
+    then:
+      - lambda: |-
+          // ── target label / "TARGET" caption ──
+          // With no active manual setpoint (auto/schedule), the device reports
+          // temperature=0.0; showing "0.0°" would be a lie. Show "AUTO" and
+          // relabel the caption to "SCHEDULE" so the dial reads honestly while
+          // the heat pump follows its program.
+          char tb[12]; snprintf(tb, sizeof(tb), "%.1f°", id(clim_target));
+          if (id(clim_boosting)) {
+            lv_label_set_text(id(lbl_room_target), tb);
+            if (!id(clim_veto_until).empty()) {
+              char cap[24]; snprintf(cap, sizeof(cap), "BOOST until %s", id(clim_veto_until).c_str());
+              lv_label_set_text(id(lbl_room_caption), cap);
+            } else lv_label_set_text(id(lbl_room_caption), "BOOST");
+          } else if (id(clim_mode) == 1) {
+            lv_label_set_text(id(lbl_room_target), tb);
+            lv_label_set_text(id(lbl_room_caption), "MANUAL");
+          } else if (id(clim_mode) == 2) {
+            lv_label_set_text(id(lbl_room_target), "OFF");
+            lv_label_set_text(id(lbl_room_caption), "HEATING OFF");
+          } else {
+            if (id(clim_has_setpoint)) lv_label_set_text(id(lbl_room_target), tb);
+            else lv_label_set_text(id(lbl_room_target), "AUTO");
+            lv_label_set_text(id(lbl_room_caption), "SCHEDULE");
+          }
+          char rb[16]; snprintf(rb, sizeof(rb), "ROOM %.1f°", id(clim_current));
+          lv_label_set_text(id(lbl_room_current), rb);
+          // .1: BOOST is now a mode in clim_mode_dd (no standalone button); the
+          // mode glyph + selection (clim_mode_glyph/clim_mode_resync) reflect boost.
+
+          // ── centre state glyph: RED flame heating / grey idle ──
+          if (id(clim_heating)) {
+            lv_label_set_text(id(ic_room_state), "$mdi_c_fire");
+            lv_obj_set_style_text_color(id(ic_room_state), lv_color_hex(0xFF5340), 0);
+          } else {
+            lv_label_set_text(id(ic_room_state), "$mdi_c_snowflake_off");
+            lv_obj_set_style_text_color(id(ic_room_state), lv_color_hex(0x9E9E9E), 0);
+          }
+
+          // ── indicator fill: warm accent while heating below target, dim grey
+          //    when satisfied. Only a directional cue against a REAL setpoint —
+          //    with no manual setpoint (arc baselined to current_temperature)
+          //    there is nothing to be "below", so render neutral grey. ──
+          bool below = id(clim_has_setpoint) && (id(clim_current) < id(clim_target) - 0.05f);
+          lv_obj_set_style_arc_color(id(clim_room_arc),
+            below ? lv_color_hex(0xF37320) : lv_color_hex(0x5A6068), LV_PART_INDICATOR);
+
+          // ── current-temp marker: position the circle on the scale at the
+          //    current temp's angle. Scale 7..35 → 130°..410° CW. Marker parent
+          //    is the arc box (clim_room_dial), so coords are box-local. ──
+          {
+            const float MIN = $climate_min_temp, MAX = $climate_max_temp, A0 = 130.0f, SWEEP = 280.0f;
+            float c = id(clim_current); if (c < MIN) c = MIN; if (c > MAX) c = MAX;
+            float a = (A0 + (c - MIN) / (MAX - MIN) * SWEEP) * 3.14159265f / 180.0f;
+            // arc box is 464×464; track radius ≈ (464/2) - arc_width/2 = 232 - 16 = 216
+            const float R = 216.0f, CX = 232.0f, CY = 232.0f;
+            int mx = (int)lroundf(CX + R * cosf(a));
+            int my = (int)lroundf(CY + R * sinf(a));
+            // marker is 44×44; centre it on the point
+            lv_obj_set_pos(id(room_cur_marker), mx - 22, my - 22);
+          }
+
+  # Repaint the Hot Water dial (display-only). Sets the display arc to the
+  # tank temp, the target label, boiler glyph, and tints the BOOST CTA.
+  - id: clim_dhw_refresh
+    then:
+      - lambda: |-
+          const float MIN = 35.0f, MAX = 70.0f, A0 = 130.0f, SWEEP = 280.0f;
+          char tb[12]; snprintf(tb, sizeof(tb), "%.0f°", id(dhw_target));
+          if (id(dhw_boosting)) {
+            lv_label_set_text(id(lbl_dhw_target), tb);
+            lv_label_set_text(id(lbl_dhw_caption), "BOOST");
+          } else if (id(dhw_mode) == 1) {
+            lv_label_set_text(id(lbl_dhw_target), tb);
+            lv_label_set_text(id(lbl_dhw_caption), "MANUAL");
+          } else if (id(dhw_mode) == 2) {
+            lv_label_set_text(id(lbl_dhw_target), "OFF");
+            lv_label_set_text(id(lbl_dhw_caption), "WATER OFF");
+          } else {
+            lv_label_set_text(id(lbl_dhw_target), tb);
+            lv_label_set_text(id(lbl_dhw_caption), "SCHEDULE");
+          }
+          char cb[16]; snprintf(cb, sizeof(cb), "TANK %.0f°", id(dhw_current));
+          lv_label_set_text(id(lbl_dhw_current), cb);
+          // .1: Boost is now a mode in dhw_mode_dd (no standalone button).
+
+          // Arc shows the TARGET setpoint (draggable in MANUAL). Clamp into range.
+          float tv = id(dhw_target); if (tv < MIN) tv = MIN; if (tv > MAX) tv = MAX;
+          id(clim_arc_sync) = true;
+          lv_arc_set_value(id(clim_dhw_arc), (int)lroundf(tv * 10.0f));
+          id(clim_arc_sync) = false;
+
+          // Current-temp marker on the scale.
+          {
+            float cc = id(dhw_current); if (cc < MIN) cc = MIN; if (cc > MAX) cc = MAX;
+            float a = (A0 + (cc - MIN) / (MAX - MIN) * SWEEP) * 3.14159265f / 180.0f;
+            const float R = 216.0f, CX = 232.0f, CY = 232.0f;
+            int mx = (int)lroundf(CX + R * cosf(a));
+            int my = (int)lroundf(CY + R * sinf(a));
+            lv_obj_set_pos(id(dhw_cur_marker), mx - 22, my - 22);
+          }
+
+
+  # ── DHW control scripts ──
+  - id: dhw_commit
+    mode: restart
+    then:
+      - delay: 700ms
+      - logger.log: {format: "[dhw] set tank target %.0f", args: ['id(dhw_target)']}
+      - homeassistant.action:
+          action: water_heater.set_temperature
+          data_template: {entity_id: $dhw_wh_entity, temperature: "{{ t }}"}
+          variables:
+            t: |-
+              float v = id(dhw_target);
+              if (v < 35.0f) v = 35.0f;
+              if (v > 70.0f) v = 70.0f;
+              return v;
+  # .1 index order: 0 AUTO(Time Controlled) · 1 MANUAL · 2 BOOST(Cylinder Boost) · 3 OFF.
+  - id: dhw_apply_mode
+    then:
+      - lambda: |-
+          id(dhw_user_editing) = false;
+          switch (lv_dropdown_get_selected(id(dhw_mode_dd)->obj)) {
+            case 0: id(dhw_set_op_auto)->execute();   break;  // Time Controlled
+            case 1: id(dhw_set_op_manual)->execute(); break;  // Manual
+            case 2: id(dhw_set_op_boost)->execute();  break;  // Cylinder Boost
+            case 3: id(dhw_set_op_off)->execute();    break;  // Off
+          }
+      - script.execute: dhw_mode_glyph
+  - id: dhw_set_op_auto
+    then:
+      - homeassistant.action: {action: water_heater.set_operation_mode, data: {entity_id: $dhw_wh_entity, operation_mode: "Time Controlled"}}
+  - id: dhw_set_op_manual
+    then:
+      - homeassistant.action: {action: water_heater.set_operation_mode, data: {entity_id: $dhw_wh_entity, operation_mode: "Manual"}}
+  - id: dhw_set_op_boost
+    then:
+      - homeassistant.action: {action: water_heater.set_operation_mode, data: {entity_id: $dhw_wh_entity, operation_mode: "Cylinder Boost"}}
+  - id: dhw_set_op_off
+    then:
+      - homeassistant.action: {action: water_heater.set_operation_mode, data: {entity_id: $dhw_wh_entity, operation_mode: "Off"}}
+  - id: dhw_mode_resync
+    then:
+      - lambda: |-
+          // index order: 0 AUTO · 1 MANUAL · 2 BOOST · 3 OFF (Boost takes priority).
+          int sel;
+          if (id(dhw_boosting))        sel = 2;   // BOOST (Cylinder Boost)
+          else if (id(dhw_mode) == 1)  sel = 1;   // MANUAL
+          else if (id(dhw_mode) == 2)  sel = 3;   // OFF
+          else                         sel = 0;   // AUTO (Time Controlled)
+          if ((int)lv_dropdown_get_selected(id(dhw_mode_dd)->obj) != sel) {
+            id(clim_mode_sync) = true;
+            lv_dropdown_set_selected(id(dhw_mode_dd)->obj, (uint16_t)sel);
+            id(clim_mode_sync) = false;
+          }
+      - script.execute: dhw_mode_glyph
+  - id: dhw_mode_glyph
+    then:
+      - lambda: |-
+          const char *g;
+          uint32_t c = 0xFFFFFF;
+          switch (lv_dropdown_get_selected(id(dhw_mode_dd)->obj)) {
+            case 1:  g = "$mdi_c_hand";           break;            // MANUAL
+            case 2:  g = "$mdi_c_fire"; c = 0xF37320; break;        // BOOST (orange)
+            case 3:  g = "$mdi_c_power";          break;            // OFF
+            default: g = "$mdi_c_calendar_clock"; break;            // AUTO
+          }
+          lv_label_set_text(id(lbl_dhw_mode_glyph), g);
+          lv_obj_set_style_text_color(id(lbl_dhw_mode_glyph), lv_color_hex(c), 0);
+  - id: dhw_gate_dial
+    then:
+      - lambda: |-
+          if (id(dhw_mode) == 1) lv_obj_add_flag(id(clim_dhw_arc), LV_OBJ_FLAG_CLICKABLE);
+          else lv_obj_remove_flag(id(clim_dhw_arc), LV_OBJ_FLAG_CLICKABLE);
+  - id: dhw_edit_release
+    mode: restart
+    then:
+      - delay: 60s
+      - lambda: 'id(dhw_user_editing) = false;'
+
+  # Apply a mode-dropdown selection. Index order MUST match the options: list:
+  # 0 AUTO · 1 MANUAL · 2 BOOST · 3 OFF (.1 — Boost folded into the selector).
+  - id: clim_apply_mode
+    then:
+      - lambda: |-
+          id(clim_user_editing) = false;  // a mode change ends any in-flight edit
+          switch (lv_dropdown_get_selected(id(clim_mode_dd)->obj)) {
+            case 0: id(clim_set_hvac_auto)->execute();   break;  // AUTO (also cancels boost)
+            case 1: id(clim_set_hvac_manual)->execute(); break;  // MANUAL
+            case 2: id(clim_set_boost)->execute();       break;  // BOOST (quick veto)
+            case 3: id(clim_set_hvac_off)->execute();    break;  // OFF
+          }
+      - script.execute: clim_mode_glyph
+  # Split into individual scripts so each holds one homeassistant.action (the
+  # action can't be chosen by lambda inline).
+  - id: clim_set_hvac_auto
+    then:
+      # AUTO must truly return to schedule: set hvac_mode=auto AND clear any active
+      # boost/away/veto preset back to "none" (a real preset in the live HA
+      # preset_modes list). set_hvac_mode alone leaves an active preset in force,
+      # so "AUTO" would not actually follow the program.
+      - homeassistant.action: {action: climate.set_hvac_mode, data: {entity_id: $climate_entity, hvac_mode: auto}}
+      - homeassistant.action: {action: climate.set_preset_mode, data: {entity_id: $climate_entity, preset_mode: none}}
+  - id: clim_set_hvac_off
+    then:
+      - homeassistant.action: {action: climate.set_hvac_mode, data: {entity_id: $climate_entity, hvac_mode: "off"}}
+  - id: clim_set_hvac_manual
+    then:
+      - homeassistant.action: {action: climate.set_hvac_mode, data: {entity_id: $climate_entity, hvac_mode: heat_cool}}
+  # BOOST mode (.1): a quick veto at the current target. Selecting another mode
+  # (AUTO clears preset->none) cancels it — there is no separate cancel button now.
+  - id: clim_set_boost
+    then:
+      - homeassistant.action:
+          action: mypyllant.set_quick_veto
+          data_template: {entity_id: $climate_entity, temperature: "{{ t }}", duration_hours: "{{ d }}"}
+          variables:
+            t: |-
+              float v = id(clim_target);
+              if (v < (float)$climate_min_temp) v = $climate_min_temp;
+              if (v > (float)$climate_max_temp) v = $climate_max_temp;
+              return v;
+            d: 'return id(clim_veto_dur);'
+
+  # Mirror the device's real hvac_mode/preset_mode into the dropdown selection so
+  # it never lies "AUTO". Priority: preset boost→2; else hvac heat_cool→1, off→3;
+  # else 0 (AUTO — covers auto and presets none/eco). Index order MUST match the
+  # dropdown options: 0 AUTO · 1 MANUAL · 2 BOOST · 3 OFF. NB an externally-set
+  # `away` preset intentionally displays as AUTO (no AWAY option on the panel).
+  #
+  # set_selected_index → raw lv_dropdown_set_selected, which does NOT emit
+  # LV_EVENT_VALUE_CHANGED (verified in lvgl_esphome.h), so on_value will not
+  # re-fire. The clim_mode_sync guard is belt-and-braces against a future change.
+  - id: clim_mode_resync
+    then:
+      - lambda: |-
+          // .1 index order: 0 AUTO · 1 MANUAL · 2 BOOST · 3 OFF. Boost (a preset
+          // overlay) takes priority over the hvac_mode for the displayed selection.
+          int sel;
+          if (id(clim_boosting))        sel = 2;   // BOOST
+          else if (id(clim_mode) == 1)  sel = 1;   // MANUAL
+          else if (id(clim_mode) == 2)  sel = 3;   // OFF
+          else                          sel = 0;   // AUTO
+          if ((int)lv_dropdown_get_selected(id(clim_mode_dd)->obj) != sel) {
+            id(clim_mode_sync) = true;
+            lv_dropdown_set_selected(id(clim_mode_dd)->obj, (uint16_t)sel);
+            id(clim_mode_sync) = false;
+          }
+      - script.execute: clim_mode_glyph
+
+  # Mode-pill leading glyph, driven from the current dropdown selection. Called by
+  # clim_apply_mode (user) AND clim_mode_resync (HA mirror) so the icon always
+  # tracks the live mode. Index order: 0 AUTO · 1 MANUAL · 2 BOOST · 3 OFF.
+  - id: clim_mode_glyph
+    then:
+      - lambda: |-
+          const char *g;
+          uint32_t c = 0xFFFFFF;  // white default
+          switch (lv_dropdown_get_selected(id(clim_mode_dd)->obj)) {
+            case 1:  g = "$mdi_c_hand";           break;            // MANUAL
+            case 2:  g = "$mdi_c_fire"; c = 0xF37320; break;        // BOOST (orange)
+            case 3:  g = "$mdi_c_power";          break;            // OFF
+            default: g = "$mdi_c_calendar_clock"; break;            // AUTO
+          }
+          lv_label_set_text(id(lbl_clim_mode_glyph), g);
+          lv_obj_set_style_text_color(id(lbl_clim_mode_glyph), lv_color_hex(c), 0);
+
+  # Gate the room dial: interactive ONLY in MANUAL or during an active boost; else
+  # non-clickable so swipes navigate and the value can't be nudged ( + sensitivity).
+  - id: clim_gate_dial
+    then:
+      - lambda: |-
+          if (id(clim_mode) == 1 || id(clim_boosting)) lv_obj_add_flag(id(clim_room_arc), LV_OBJ_FLAG_CLICKABLE);
+          else lv_obj_remove_flag(id(clim_room_arc), LV_OBJ_FLAG_CLICKABLE);
+
+  # Edit-lock safety release: unlock 60s after the last edit if HA never confirms.
+  - id: clim_edit_release
+    mode: restart
+    then:
+      - delay: 60s
+      - lambda: 'id(clim_user_editing) = false;'
+
+lvgl:
+  pages:
+    # ═════════════════════ CLIMATE · ROOM (F1 P0 — .1) ═════════════════════
+    - id: climate_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: 1, p: 0}
+        - script.execute: clim_gate_dial
+        - script.execute: clim_room_refresh
+      widgets:
+        # ── Dial box (464×464) centred in the content region. Holds the arc, the
+        #    decorative tick/label ring is baked via labels, the current marker,
+        #    and the centre stack. Parent for box-local marker positioning. ──
+        - obj:
+            id: clim_room_dial
+            align: TOP_MID
+            y: 80
+            width: 464
+            height: 464
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            widgets:
+              # Draggable arc: open-bottom 280°, value = target×10 (70..350).
+              - arc:
+                  id: clim_room_arc
+                  align: CENTER
+                  width: 464
+                  height: 464
+                  arc_width: 32
+                  start_angle: 130
+                  end_angle: 50    # 410 mod 360 — ESPHome requires 0..360; 130→50 CW = 280° open-bottom arc
+                  adjustable: true
+                  min_value: 70
+                  max_value: 350
+                  value: 200
+                  arc_color: 0x23262C        # background track
+                  arc_rounded: true
+                  indicator:
+                    arc_color: 0xF37320
+                    arc_width: 32
+                    # Flat cap: a rounded cap pokes out from behind the white knob
+                    # at the arc head (reads as a second blob). Track stays rounded.
+                    arc_rounded: false
+                  # : bracket the drag. PRESS raises clim_arc_pressed so echoes
+                  # are hard-ignored for the whole touch; RELEASE drops it (and re-arms
+                  # the 60s safety + the confirm-based unlock) so HA can resync once the
+                  # write lands. Only meaningful while the dial is live.
+                  on_press:
+                    - if:
+                        condition:
+                          lambda: 'return id(clim_mode) == 1 || id(clim_boosting);'
+                        then:
+                          - lambda: 'id(clim_arc_pressed) = true; id(clim_user_editing) = true;'
+                  on_release:
+                    - lambda: 'id(clim_arc_pressed) = false;'
+                    - script.execute: clim_edit_release
+                    - script.execute: clim_room_commit
+                  on_value:
+                    # Drag writes ONLY when the arc is live (MANUAL or active boost)
+                    # and not a programmatic set (clim_arc_sync). Read-only otherwise.
+                    - if:
+                        condition:
+                          lambda: 'return !id(clim_arc_sync) && (id(clim_mode) == 1 || id(clim_boosting));'
+                        then:
+                          - lambda: |-
+                              float t = (float)x / 10.0f;
+                              t = roundf(t * 2.0f) / 2.0f;
+                              id(clim_target) = t;
+                              id(clim_has_setpoint) = true;
+                              id(clim_user_editing) = true;  // lock the HA echo while editing
+                          - script.execute: clim_room_refresh
+                          - script.execute: clim_edit_release
+                          - script.execute: clim_room_commit
+              # Tick / value labels (7-35) — decorative, baked at the major marks.
+              # Placed by polar maths matching the arc scale (clickable:false).
+              - label: {id: lbl_room_t7,  clickable: false, align: CENTER, x: -126, y: 126, text: "7°",  text_font: oswald_18, text_color: gray500}
+              - label: {id: lbl_room_t14, clickable: false, align: CENTER, x: -180, y: -36, text: "14°", text_font: oswald_18, text_color: gray500}
+              - label: {id: lbl_room_t21, clickable: false, align: CENTER, x: 0,    y: -180, text: "21°", text_font: oswald_18, text_color: gray500}
+              - label: {id: lbl_room_t28, clickable: false, align: CENTER, x: 180,  y: -36, text: "28°", text_font: oswald_18, text_color: gray500}
+              - label: {id: lbl_room_t35, clickable: false, align: CENTER, x: 126,  y: 126, text: "35°", text_font: oswald_18, text_color: gray500}
+
+              # Current-temp marker: white circle + thermometer glyph, repositioned
+              # by clim_room_refresh. align TOP_LEFT so lv_obj_set_pos is box-local.
+              - obj:
+                  id: room_cur_marker
+                  align: TOP_LEFT
+                  x: 210
+                  y: 210
+                  width: 44
+                  height: 44
+                  radius: 22
+                  bg_color: 0xF2F0EB
+                  bg_opa: cover
+                  border_width: 2
+                  border_color: 0x0D0D0D
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - label: {id: ic_room_cur, clickable: false, align: CENTER, text: $mdi_c_thermometer, text_font: mdi_clim_22, text_color: 0x0D0D0D}
+
+              # Centre stack: state glyph · target · "TARGET" · room current.
+              # SIZE_CONTENT so the box hugs its widest child and align:CENTER
+              # lands the content on the ring centre — fixed width + flex cross
+              # centring left the readings ~50px left of centre (l7k).
+              - obj:
+                  align: CENTER
+                  y: 0
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 2}
+                  widgets:
+                    - label:
+                        <<: !include
+                          file: widgets/state_glyph.yaml
+                          vars: {uid: ic_room_state, glyph: $mdi_c_fire, glyph_font: mdi_clim_56, fg: 0xFF5340}
+                    - label: {id: lbl_room_target, clickable: false, text: "20.0°", text_font: oswald_72, text_color: 0xF37320}
+                    - label: {id: lbl_room_caption, clickable: false, text: "TARGET", text_font: oswald_14, text_color: gray500}
+                    - label: {id: lbl_room_current, clickable: false, text: "ROOM --°", text_font: oswald_20, text_color: gray400}
+
+        # ── Single Mode selector in the bottom cut-out (.1) ──
+        #    AUTO / MANUAL / BOOST / OFF. Boost is now a mode option (was a separate
+        #    CTA button); selecting it starts a quick veto, selecting AUTO cancels it.
+        #    Centred in the 80° opening, above the bottom bar. .1.
+        - dropdown:
+            <<: !include
+              file: widgets/mode_dropdown.yaml
+              vars: {uid: clim_mode_dd, width: 200, font: oswald_20, fg: white, bg: 0x191C22, sel_bg: ep_orange,
+                     symbol: $mdi_c_chevron_down, symbol_font: mdi_clim_28}
+            align: TOP_MID
+            x: 0
+            y: 500
+            pad_left: 48    # clear the leading mode glyph overlaid on the pill
+            options:
+              - "AUTO"
+              - "MANUAL"
+              - "BOOST"
+              - "OFF"
+            on_value:
+              # Skip when WE set the selection programmatically (clim_mode_resync).
+              # Raw lv_dropdown_set_selected does not fire on_value today, but the
+              # guard keeps a user selection the only path that writes to HA.
+              - if:
+                  condition:
+                    lambda: 'return !id(clim_mode_sync);'
+                  then:
+                    - script.execute: clim_apply_mode
+
+        # Leading mode glyph, overlaid on the pill's left edge (lv_dropdown carries
+        # no per-option glyph). clickable:false so taps fall through to the dropdown;
+        # text driven by clim_mode_glyph. AUTO default = calendar-clock (schedule). l7k.
+        - label:
+            id: lbl_clim_mode_glyph
+            clickable: false
+            align: TOP_MID
+            x: -74
+            y: 507
+            text: $mdi_c_calendar_clock
+            text_font: mdi_clim_28
+            text_color: white
+
+        # ── COMMON BOTTOM BAR (.3): Outdoor · Humidity · COP · Bar ──
+        - obj: {styles: shell_divider, align: BOTTOM_MID, y: -$shell_bar_h, width: 100%, height: 1}
+        - obj:
+            id: room_botbar
+            styles: shell_bar
+            align: BOTTOM_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - !include
+                        file: widgets/stat_cell_inline.yaml
+                        vars: {value_id: lbl_room_outdoor, glyph: $mdi_c_weather_partly_cloudy, glyph_font: mdi_clim_28, glyph_color: gray400, value_font: oswald_24, value_text: "--°", value_color: white, gap: 9}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - !include
+                        file: widgets/stat_cell_inline.yaml
+                        vars: {value_id: lbl_room_humidity, glyph: $mdi_c_water_percent, glyph_font: mdi_clim_28, glyph_color: ep_blue, value_font: oswald_24, value_text: "--%", value_color: white, gap: 9}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - !include
+                        file: widgets/stat_cell_inline.yaml
+                        vars: {value_id: lbl_room_cop, glyph: $mdi_c_leaf, glyph_font: mdi_clim_28, glyph_color: ep_green, value_font: oswald_24, value_text: "×--", value_color: white, gap: 9}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - obj:
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 9}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_c_gauge, text_font: mdi_clim_28, text_color: gray400}
+                          - label: {id: lbl_room_pressure, clickable: false, text: "--", text_font: oswald_24, text_color: white}
+                          - label: {clickable: false, text: "bar", text_font: oswald_14, text_color: gray500}
+
+    # ═══════════════════ CLIMATE · HOT WATER (F1 P1 — .2) ═══════════════════
+    - id: hotwater_page
+      styles: page_style
+      skip: false
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: 1, p: 1}
+        - script.execute: dhw_gate_dial
+        - script.execute: clim_dhw_refresh
+      widgets:
+        # ── DHW dial box (display-only): non-interactive arc fills to tank temp ──
+        - obj:
+            id: clim_dhw_dial
+            align: TOP_MID
+            y: 80
+            width: 464
+            height: 464
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            widgets:
+              - arc:
+                  id: clim_dhw_arc
+                  align: CENTER
+                  width: 464
+                  height: 464
+                  arc_width: 32
+                  start_angle: 130
+                  end_angle: 50    # 410 mod 360 — ESPHome requires 0..360; 130→50 CW = 280° open-bottom arc
+                  adjustable: true
+                  min_value: 350
+                  max_value: 700
+                  value: 500
+                  arc_color: 0x23262C
+                  arc_rounded: true
+                  indicator:
+                    arc_color: 0x01B4DE
+                    arc_width: 32
+                    arc_rounded: false   # flat cap — same knob-blob fix as the room dial
+                  on_value:
+                    # Drag writes ONLY in MANUAL and not a programmatic set. Read-only otherwise.
+                    - if:
+                        condition:
+                          lambda: 'return !id(clim_arc_sync) && id(dhw_mode) == 1;'
+                        then:
+                          - lambda: |-
+                              float t = roundf((float)x / 10.0f);  // DHW step 1°
+                              id(dhw_target) = t;
+                              id(dhw_user_editing) = true;
+                          - script.execute: clim_dhw_refresh
+                          - script.execute: dhw_edit_release
+                          - script.execute: dhw_commit
+              # Tick / value labels (35-70).
+              - label: {id: lbl_dhw_t35, clickable: false, align: CENTER, x: -126, y: 126, text: "35°", text_font: oswald_18, text_color: gray500}
+              - label: {id: lbl_dhw_t47, clickable: false, align: CENTER, x: -170, y: -54, text: "47°", text_font: oswald_18, text_color: gray500}
+              - label: {id: lbl_dhw_t58, clickable: false, align: CENTER, x: 170,  y: -54, text: "58°", text_font: oswald_18, text_color: gray500}
+              - label: {id: lbl_dhw_t70, clickable: false, align: CENTER, x: 126,  y: 126, text: "70°", text_font: oswald_18, text_color: gray500}
+
+              # Current-temp marker on the tank scale.
+              - obj:
+                  id: dhw_cur_marker
+                  align: TOP_LEFT
+                  x: 210
+                  y: 210
+                  width: 44
+                  height: 44
+                  radius: 22
+                  bg_color: 0xF2F0EB
+                  bg_opa: cover
+                  border_width: 2
+                  border_color: 0x0D0D0D
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: $mdi_c_thermometer_water, text_font: mdi_clim_22, text_color: 0x0D0D0D}
+
+              # Centre stack: boiler glyph · target · "TARGET" · tank current.
+              # SIZE_CONTENT so the box hugs its widest child and align:CENTER
+              # lands the content on the ring centre (l7k — see room stack above).
+              - obj:
+                  align: CENTER
+                  y: 0
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 2}
+                  widgets:
+                    - label: {id: ic_dhw_state, clickable: false, text: $mdi_c_water_boiler, text_font: mdi_clim_56, text_color: 0xFF5340}
+                    - label: {id: lbl_dhw_target, clickable: false, text: "50°", text_font: oswald_72, text_color: 0x01B4DE}
+                    - label: {id: lbl_dhw_caption, clickable: false, text: "TARGET", text_font: oswald_14, text_color: gray500}
+                    - label: {id: lbl_dhw_current, clickable: false, text: "TANK --°", text_font: oswald_20, text_color: gray400}
+
+        # ── Single Mode selector (.1) → water_heater.set_operation_mode ──
+        #    Canonical operation_list: Time Controlled / Manual / Cylinder Boost / Off.
+        #    Boost is a native operation_mode (no separate switch/button now).
+        - dropdown:
+            <<: !include
+              file: widgets/mode_dropdown.yaml
+              vars: {uid: dhw_mode_dd, width: 200, font: oswald_20, fg: white, bg: 0x191C22, sel_bg: ep_orange,
+                     symbol: $mdi_c_chevron_down, symbol_font: mdi_clim_28}
+            align: TOP_MID
+            x: 0
+            y: 500
+            pad_left: 48
+            options:
+              - "AUTO"
+              - "MANUAL"
+              - "BOOST"
+              - "OFF"
+            on_value:
+              - if:
+                  condition: {lambda: 'return !id(clim_mode_sync);'}
+                  then:
+                    - script.execute: dhw_apply_mode
+        - label:
+            id: lbl_dhw_mode_glyph
+            clickable: false
+            align: TOP_MID
+            x: -74
+            y: 507
+            text: $mdi_c_calendar_clock
+            text_font: mdi_clim_28
+            text_color: white
+
+        # ── COMMON BOTTOM BAR (.3): Outdoor · Humidity · COP · Bar ──
+        - obj: {styles: shell_divider, align: BOTTOM_MID, y: -$shell_bar_h, width: 100%, height: 1}
+        - obj:
+            id: dhw_botbar
+            styles: shell_bar
+            align: BOTTOM_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - !include
+                        file: widgets/stat_cell_inline.yaml
+                        vars: {value_id: lbl_dhw_outdoor, glyph: $mdi_c_weather_partly_cloudy, glyph_font: mdi_clim_28, glyph_color: gray400, value_font: oswald_24, value_text: "--°", value_color: white, gap: 9}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - !include
+                        file: widgets/stat_cell_inline.yaml
+                        vars: {value_id: lbl_dhw_humidity, glyph: $mdi_c_water_percent, glyph_font: mdi_clim_28, glyph_color: ep_blue, value_font: oswald_24, value_text: "--%", value_color: white, gap: 9}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - !include
+                        file: widgets/stat_cell_inline.yaml
+                        vars: {value_id: lbl_dhw_cop, glyph: $mdi_c_leaf, glyph_font: mdi_clim_28, glyph_color: ep_green, value_font: oswald_24, value_text: "×--", value_color: white, gap: 9}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_bz_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - obj:
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 9}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_c_gauge, text_font: mdi_clim_28, text_color: gray400}
+                          - label: {id: lbl_dhw_pressure, clickable: false, text: "--", text_font: oswald_24, text_color: white}
+                          - label: {clickable: false, text: "bar", text_font: oswald_14, text_color: gray500}

@@ -1,0 +1,3 @@
+lvgl_screenshot:
+  pages:
+    - {name: security, page: security_page}

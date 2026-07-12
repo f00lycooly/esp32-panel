@@ -1,0 +1,47 @@
+# ───────────────────────────────────────────────────────────────────────────
+# stat_cell.yaml — icon / value / caption block, STACKED
+#
+# A small metric cell: MDI glyph above a big value above a caption. Unifies the
+# climate footer (4 identical hand-built cells), the main page's climate strip,
+# and could replace the energy node 2-line labels. Compact by default so four
+# of them fit the 72px bottom bar (glyph 28 · value 20 · caption 14 ≈ 62px).
+#
+# This is page CONTENT (no action), so it's a normal list-item include — drop it
+# straight into a bar zone's `widgets:` list:
+#
+#   - obj:                              # a shell bottom-bar zone
+#       styles: shell_zone
+#       width: $shell_bz_w
+#       height: $shell_zone_h
+#       scrollable: false
+#       widgets:
+#         - !include
+#             file: widgets/stat_cell.yaml
+#             vars: {value_id: lbl_clim_humidity, glyph: $mdi_water_percent,
+#                    glyph_font: mdi_card_28, glyph_color: ep_blue,
+#                    value_font: oswald_20, value_text: "--%", caption: HUMIDITY,
+#                    pad_row: 0}
+#
+# value_id is the label a sensor on_value updates — keep it stable when
+# converting existing cells. For the inline (icon + value on one row) layout,
+# use stat_cell_inline.yaml.
+#
+# vars: glyph, glyph_font, glyph_color, value_id, value_font, value_text,
+#       caption, pad_row
+# ───────────────────────────────────────────────────────────────────────────
+obj:
+  align: CENTER
+  width: SIZE_CONTENT
+  height: SIZE_CONTENT
+  bg_opa: TRANSP
+  border_width: 0
+  pad_all: 0
+  scrollable: false
+  clickable: false
+  # NB: $var (not ${var}) inside flow mappings — ${} braces collide with the
+  # flow-mapping {} delimiters and break the YAML parser before substitution.
+  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: $pad_row}
+  widgets:
+    - label: {clickable: false, text: $glyph, text_font: $glyph_font, text_color: $glyph_color}
+    - label: {id: $value_id, clickable: false, text: "$value_text", text_font: $value_font, text_color: white}
+    - label: {clickable: false, text: "$caption", styles: caption}

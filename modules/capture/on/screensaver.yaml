@@ -1,0 +1,3 @@
+lvgl_screenshot:
+  pages:
+    - {name: screensaver, page: screensaver_page}

@@ -1,0 +1,52 @@
+# ───────────────────────────────────────────────────────────────────────────
+# mode_dropdown.yaml — lv_dropdown selector
+#
+# An LVGL dropdown for picking one of a small fixed set — HVAC mode (Heat/Cool/
+# Auto/Off), source, etc. LVGL-honest: a real `dropdown`, no keyboard.
+#
+# Like tumbler, the include carries STYLING + id only; the CALLER adds the
+# page-specific `options:` (sibling key) and an `on_value` to push the choice:
+#
+#   - dropdown:
+#       <<: !include {file: widgets/mode_dropdown.yaml, vars: {uid: clim_mode_dd,
+#              width: 200, font: oswald_24}}
+#       options: ["Heat","Cool","Auto","Off"]
+#       on_value:
+#         - homeassistant.action: {action: climate.set_hvac_mode, data: {...}}
+#
+# ids: ${uid} (dropdown). vars: uid, width, font (default oswald_24),
+#      fg (default white), bg (default gray900), sel_bg (default ep_blue),
+#      symbol (an MDI chevron glyph char), symbol_font (MDI font carrying it)
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+width: ${width}
+text_font: ${font}
+text_color: ${fg}
+bg_color: ${bg}
+bg_opa: cover
+border_width: 0
+radius: 12
+pad_left: 16
+pad_right: 12
+# LVGL's built-in LV_SYMBOL_DOWN lives only in LVGL's internal default font;
+# drawn through an Oswald text_font it renders a tofu box. So the caller passes
+# an MDI chevron glyph + the MDI font that carries it — LVGL draws the dropdown
+# symbol with the INDICATOR part's text_font.
+symbol: ${symbol}
+indicator:
+  text_font: ${symbol_font}
+  text_color: ${fg}
+# The drop-open list + its highlighted row.
+# text_color MUST be set here: without it the list rows inherit LVGL's default
+# (dark) text, which is invisible on the dark list bg — so only the highlighted
+# (selected) row was readable and the dropdown looked like it "only shows AUTO".
+dropdown_list:
+  text_font: ${font}
+  text_color: ${fg}
+  bg_color: ${bg}
+  border_width: 0
+  radius: 12
+  selected:
+    bg_color: ${sel_bg}
+    bg_opa: cover
+    text_color: white

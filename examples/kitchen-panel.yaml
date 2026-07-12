@@ -1,0 +1,177 @@
+# Kitchen ESP32-P4 panel — example SECOND-panel composition root.
+#
+# The multi-panel pattern: one user-config.yaml holds the house-wide bindings
+# (endpoints, Spotify feeds, energy, climate, people, …) shared by every
+# panel; each panel gets its own copy of this device file that includes
+# user_config FIRST and then overrides ONLY the per-panel keys inline —
+# device-file substitutions take precedence over package (user-config) ones.
+#
+# This example: F0 Main (Now Playing · Multi-Room) · F1 Room (Lights · Vacuum)
+# · F2 Timer+Alarm. Keeps HA Voice (assist) + Bluetooth (ble_proxy). Climate +
+# Energy pages are zero-cost reuse, OFF the swipe nav (Energy is still
+# reachable via the top-bar battery pill).
+#
+# Function order matches the reused pages' native nav_arrive indices (main=F0,
+# timer/alarm=F2) so the position dots stay correct; the Room/Vacuum pages
+# parameterise their nav coords to sit at F1.
+#
+# STATUS: the Room card is a stub (page-room).
+#
+# Copy this file to the repo root before running (the modules/ and
+# user-config.yaml include paths resolve from the config root):
+#   cp examples/kitchen-panel.yaml . && esphome run kitchen-panel.yaml
+
+substitutions:
+  # ── Display-capture mode ──
+  # "off" for production: no screenshot roster, no :8080 endpoint. Flip "on"
+  # AND uncomment the display_capture package below for a dev build.
+  capture_mode: "off"
+
+  # ── Per-panel identity (overrides user-config) ──
+  name: "kitchenpanel"
+  friendly_name: KitchenPanel
+  project_name: "foolycooly.esp32-panel"
+  project_version: "2026.07.11"
+  log_level: INFO
+  freertos_runtime_stats: "n"
+
+  # ── Media binding (per-panel — each panel needs its own mirror + helper,
+  #    see homeassistant/examples/media_mirror.yaml) ──
+  media_mirror_entity: sensor.kitchen_active_media          # CHANGE
+  active_player_helper: input_text.kitchen_active_player    # CHANGE
+  # Seed the voice target speaker to THIS room (only seeds the first-boot
+  # value of the runtime-editable target_speaker text; an NVS-persisted value
+  # still wins on an already-set device).
+  external_media_player: kitchen                            # CHANGE
+
+  # ── Sonos room roster (7 fixed slots) — local default = kitchen ──
+  media_local_slug: kitchen                                 # CHANGE (all slugs/captions)
+  media_room_0_slug: living_room
+  media_room_0_caption: "Living Rm"
+  media_room_1_slug: kitchen
+  media_room_1_caption: "Kitchen"
+  media_room_2_slug: dining_room
+  media_room_2_caption: "Dining Rm"
+  media_room_3_slug: office
+  media_room_3_caption: "Office"
+  media_room_4_slug: bedroom
+  media_room_4_caption: "Bedroom"
+  media_room_5_slug: garage
+  media_room_5_caption: "Garage"
+  media_room_6_slug: portable
+  media_room_6_caption: "Portable"
+  local_room_label: "KITCHEN"
+
+  # ── Per-panel timer entity (an HA timer helper) ──
+  timer_entity: timer.kitchen                               # CHANGE
+
+  # ── Tile-grid Room roster (consumed when the page-room card is built) ──
+  room_tile_0_entity: light.kitchen_main_lights             # CHANGE
+  room_tile_0_caption: "Main"
+  room_tile_0_kind: light
+  room_tile_1_entity: light.kitchen_dining_lights           # CHANGE
+  room_tile_1_caption: "Dining"
+  room_tile_1_kind: light
+
+  # ── 2D nav contract: F0 Main · F1 Room · F2 Timer+Alarm ──
+  nav_functions: "3"
+  nav_pages_per_func: "4"
+  nav_npages: "{2, 2, 2}"
+  nav_pages_matrix: >-
+    { id(main_page)->obj,    id(multiroom_page)->obj },
+    { id(room_page)->obj,    id(vacuum_page)->obj     },
+    { id(timer_page)->obj,   id(alarm_page)->obj      }
+
+  # ── Alarm speaker roster (local = kitchen) ──
+  alarm_room_player: "media_player.${media_local_slug}"
+  alarm_local_label: "Kitchen"
+  alarm_row_0_slug: ${media_local_slug}
+  alarm_row_0_label: "Kitchen"
+  alarm_row_0_glyph: $mdi_fridge
+  alarm_row_1_slug: ${media_room_0_slug}
+  alarm_row_1_label: "Living Room"
+  alarm_row_1_glyph: $mdi_sofa
+  alarm_row_2_slug: ${media_room_3_slug}
+  alarm_row_2_label: "Office"
+  alarm_row_2_glyph: $mdi_desk
+  alarm_row_3_slug: ${media_room_4_slug}
+  alarm_row_3_label: "Bedroom"
+  alarm_row_3_glyph: $mdi_bed
+  alarm_row_4_slug: ${media_room_5_slug}
+  alarm_row_4_label: "Garage"
+  alarm_row_4_glyph: $mdi_garage
+  alarm_row_5_slug: ${media_room_2_slug}
+  alarm_row_5_label: "Dining Rm"
+  alarm_row_5_glyph: $mdi_silverware_fork_knife
+
+packages:
+  # House-wide site bindings — shared with the main panel. Keys overridden in
+  # the substitutions block above win over the ones in user-config.yaml.
+  user_config: !include user-config.yaml
+  hardware: !include
+    file: modules/hardware/p4-86-panel.yaml
+    vars:
+      rotation: "0"
+  foundation: !include modules/ui-foundation.yaml
+  ble_proxy: !include modules/ble-proxy.yaml          # Bluetooth (boots BLE-off; enable via switch)
+  assist: !include modules/assist.yaml                # this panel keeps HA Voice
+  ui_shared: !include modules/ui-shared.yaml
+  nav2d: !include modules/nav2d.yaml
+  takeover: !include modules/takeover.yaml
+  top_bar: !include modules/top-bar.yaml
+  voice_overlay: !include modules/voice-overlay.yaml
+  # ── Functions ──
+  page_main: !include modules/page-main.yaml          # F0 P0
+  page_media: !include modules/page-media.yaml        # F0 P1 (multiroom) + media backend
+  page_room: !include modules/page-room.yaml          # F1 P0  (STUB — tile-grid card TBD)
+  page_vacuum: !include modules/page-vacuum.yaml      # F1 P1
+  page_timer: !include modules/page-timer.yaml        # F2 P0
+  page_alarm: !include modules/page-alarm.yaml        # F2 P1
+  # ── Chrome-required (not in swipe nav) ──
+  page_energy: !include modules/page-energy.yaml      # battery-pill target
+  page_screensaver: !include modules/page-screensaver.yaml   # idle default
+  info_screen: !include modules/page-info.yaml               # cog target (+ self-registers capture)
+  # Display screenshot capture (DIAGNOSTIC). Uncomment AND flip capture_mode
+  # "on" above so every page module self-registers its screens at
+  # GET :8080/screenshot?page=<name>. A production panel omits it.
+  # display_capture: !include modules/display-capture.yaml
+  # ── Optional, OFF (zero-cost reuse — uncomment + add to nav matrix to enable) ──
+  # page_climate: !include modules/page-climate.yaml
+
+# ── Bluetooth (BLE proxy over the C6) — brick-proof bring-up ──
+# Enabling BLE at boot hard-blocks loopTask before the C6 BT side is ready →
+# boot loop, and a boot loop defeats OTA. So boot with BLE OFF (panel always
+# comes up clean + OTA-reachable) and enable on demand via the "Bluetooth
+# proxy" switch. If the enable ever hangs, the watchdog reboots back to a
+# clean BLE-off state (restore_mode ALWAYS_OFF) — never an unrecoverable loop.
+esp32_ble:
+  enable_on_boot: false
+
+switch:
+  - platform: template
+    name: "Bluetooth proxy"
+    id: ble_enable_switch
+    icon: mdi:bluetooth
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - ble.enable:
+    turn_off_action:
+      - ble.disable:
+
+# Auto-enable BLE 15s after boot. enable_on_boot stays false so the boot
+# itself is always clean + OTA-safe; this brings BT up automatically once the
+# C6 BT side is ready (proven safe on-device post-boot). One-shot per boot via
+# esphome.on_boot (merges with the shared on_boot), so a manual switch-off
+# afterward is respected. Drives the switch so its HA state stays accurate.
+esphome:
+  on_boot:
+    - priority: -100
+      then:
+        - delay: 15s
+        - if:
+            condition:
+              not:
+                ble.enabled:
+            then:
+              - switch.turn_on: ble_enable_switch

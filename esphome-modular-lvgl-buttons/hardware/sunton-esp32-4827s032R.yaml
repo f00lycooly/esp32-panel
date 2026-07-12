@@ -1,0 +1,117 @@
+# Hardware configuration file for
+# download link ESP32-4827S043：
+# http://pan.jczn1688.com/directlink/1/ESP32%20module/4.3inch_ESP32-4827S043.zip
+# https://www.aliexpress.com/item/1005008646666037.html
+---
+
+substitutions:
+  # Screen Size
+  screen_height: 280
+  screen_width: 480
+
+esphome:
+  min_version: 2026.5.0
+  project:
+    name: "Sunton.ESP32-4827s032R"
+    version: "1.0"
+
+esp32:
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    advanced:
+      execute_from_psram: true
+
+preferences:
+  flash_write_interval: 5min
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+i2c:
+  - id: bus_a
+    sda: 19
+    scl: 20
+
+# -------------------------------------------
+# Backlight
+# -------------------------------------------
+output:
+  - platform: ledc
+    pin: 2
+    frequency: 1220
+    id: gpio_backlight_pwm
+
+light:
+  - platform: monochromatic  # Define a monochromatic, dimmable light for the backlight
+    output: gpio_backlight_pwm
+    name: Display Backlight
+    id: display_backlight
+    restore_mode: ALWAYS_ON
+
+spi:
+  - id: spi_touch
+    clk_pin: 12
+    mosi_pin: 11
+    miso_pin: 13
+
+touchscreen:
+  - id: my_touchscreen
+    platform: xpt2046
+    spi_id: spi_touch
+    cs_pin: 38  # 33
+    interrupt_pin: 18  # 36
+    update_interval: 100ms
+    threshold: 400
+    calibration:
+      x_min: 300  # 1
+      x_max: 3700  # 4095
+      y_min: 300  # 1
+      y_max: 3700  # 4095
+    transform:
+      swap_xy: false
+      mirror_x: false
+      mirror_y: false
+# on_touch:
+#   - lambda: |-
+#       ESP_LOGI("ON_TOUCH", "ON_TOUCH");
+#
+#   - lambda: |-
+#       ESP_LOGI("cal", "x=%d, y=%d, x_raw=%d, y_raw=%0d",
+#         touch.x,
+#         touch.y,
+#         touch.x_raw,
+#         touch.y_raw
+#       );
+
+display:
+  - id: my_display
+    platform: rpi_dpi_rgb
+    dimensions:
+      width: 480  # 480
+      height: 280  # 272 is not working, tried 270,271,275,278 and it shows garbage
+    color_order: RGB
+    de_pin: 40
+    hsync_pin: 39
+    vsync_pin: 41
+    pclk_pin: 42
+    pclk_inverted: true
+    pclk_frequency: 14MHz  # 9MHz #original was 14MHz # unsure about this
+    hsync_front_porch: 8
+    hsync_pulse_width: 4
+    hsync_back_porch: 43
+    vsync_front_porch: 8
+    vsync_pulse_width: 4
+    vsync_back_porch: 12
+    data_pins:
+      red: [45, 48, 47, 21, 14]
+      green: [5, 6, 7, 15, 16, 4]
+      blue: [8, 3, 46, 9, 1]
+    update_interval: never
+    auto_clear_enabled: false
+
+# Special LVGL settings required for this display
+lvgl:
+  rotation: ${rotation | default("90")}

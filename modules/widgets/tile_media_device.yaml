@@ -1,0 +1,104 @@
+# ───────────────────────────────────────────────────────────────────────────
+# tile_media_device.yaml — Rooms-modal Sonos tile (page-media only).
+#
+# Staged multi-select grouping tile (, was single-select in
+# ). Tapping toggles the room in the staged_players vector (stage_toggle
+# script): first-staged becomes the group coordinator. Visual state is painted by
+# refresh_device_sel (otg / Option B gradient cards) — coordinator = ep_blue VER
+# gradient + "HUB" chip + dark glyph/caption, member = blue-tint gradient + 2px
+# ep_blue outline, idle = slate gradient card. A self-evident play/pause glyph
+# (driven by the .22 topology text_sensors) marks live playback, independent of
+# staging — so the modal needs no legend ( redesign).
+#
+# Children are label/obj only (non-clickable) so the tile is immune to the LVGL v9
+# obj-clickable trap — see bd memory `lvgl-v9-obj-clickable-default`.
+#
+# The tile_id MUST match the ids refresh_device_sel + the topology sensors drive:
+#   ${tile_id} (button), ${tile_id}_cap (caption), ${tile_id}_dot (play/pause),
+#   ${tile_id}_ic (speaker glyph), ${tile_id}_chip (coordinator HUB chip).
+#
+# Usage:
+#   - !include
+#       file: widgets/tile_media_device.yaml
+#       vars: {tile_id: m_living, col: 0, row: 0,
+#              caption: "Living Rm", player: media_player.living_room}
+#
+# vars: tile_id, col, row, caption, player
+# ───────────────────────────────────────────────────────────────────────────
+button:
+  id: ${tile_id}
+  styles: nav_tile
+  # Idle look (otg / Option B): a vertical slate gradient so the tile reads as a
+  # card on the very_dark_gray sheet — matching the Playlists-modal tile language.
+  # refresh_device_sel repaints bg_color/bg_grad_color/border per staged state.
+  bg_color: 0x3A3F4A
+  bg_grad_color: 0x23262D
+  bg_grad_dir: VER
+  bg_opa: cover
+  border_width: 1
+  border_color: 0x454A55
+  grid_cell_column_pos: ${col}
+  grid_cell_row_pos: ${row}
+  grid_cell_x_align: STRETCH
+  grid_cell_y_align: STRETCH
+  widgets:
+    # Live playback marker (top-left) — set by apply_room_status from the .22
+    # topology: play glyph = playing (green), pause glyph = paused (amber),
+    # hidden = idle. Self-evident, so the modal needs no legend.
+    - label:
+        id: ${tile_id}_dot
+        align: TOP_LEFT
+        x: 8
+        y: 6
+        text: $mdi_play
+        text_font: mdi_card_28
+        text_color: ep_green
+        hidden: true
+    # Coordinator "HUB" chip (top-right) — shown only on the index-0 staged tile
+    # by refresh_device_sel. Dark text on a light-blue chip reads on the blue tile.
+    - label:
+        id: ${tile_id}_chip
+        align: TOP_RIGHT
+        x: -6
+        y: 8
+        text: "HUB"
+        text_font: oswald_14
+        text_color: 0x06222A
+        bg_color: 0xBFEAF4
+        bg_opa: cover
+        radius: 8
+        pad_left: 6
+        pad_right: 6
+        pad_top: 1
+        pad_bottom: 1
+        hidden: true
+    # Glyph + caption stacked, centred via an auto-sized inner obj (flex on a
+    # button widget is unreliable — CLAUDE.md LVGL gotcha). ic colour is repainted
+    # per state by refresh_device_sel.
+    - obj:
+        clickable: false       # LVGL v9 obj defaults clickable; must not swallow the tile tap
+        align: center
+        width: SIZE_CONTENT
+        height: SIZE_CONTENT
+        bg_opa: TRANSP
+        border_width: 0
+        pad_all: 0
+        scrollable: false
+        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 2}
+        widgets:
+          - label:
+              id: ${tile_id}_ic
+              clickable: false
+              text: $mdi_speaker
+              text_font: mdi_media_28
+              text_color: 0x9BA2BC
+          - label:
+              id: ${tile_id}_cap
+              clickable: false
+              text: "${caption}"
+              text_font: nunito_20
+              text_color: white
+  on_click:
+    - script.execute:
+        id: stage_toggle
+        player: "${player}"

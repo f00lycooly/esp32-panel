@@ -1,0 +1,237 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# user-config.yaml.example — ALL site-specific bindings for the panel.
+#
+#   cp user-config.yaml.example user-config.yaml     # then edit user-config.yaml
+#
+# This file is included as the FIRST package by waveshare-p4-86-panel.yaml and
+# is a pure `substitutions:` file: every entity id, endpoint, name and roster
+# the shared page modules consume. The device file (and the per-panel forks in
+# examples/) may override any key here — device-file substitutions take
+# precedence over package ones.
+#
+# Every key is required unless marked optional: the modules reference these
+# substitutions unconditionally, so a missing key is a validation error.
+# Pointing a key at an entity you don't have is safe — the widget shows
+# "unavailable"/"—" — but see homeassistant/examples/ for template packages
+# that provide the non-trivial sensors (spotify feeds, media mirror, weather
+# wrapper, alarm helpers, energy daily-flow meters).
+# ═════════════════════════════════════════════════════════════════════════════
+
+substitutions:
+  # ── Identity ────────────────────────────────────────────────────────────────
+  # ${name} seeds the WiFi fallback-AP SSID, the HA entity-id prefix for every
+  # entity this panel exports (sensor.<name>_..., light.<name>_lcd_backlight),
+  # and the mDNS hostname. Lowercase, no spaces.
+  name: "panel"
+  friendly_name: Panel
+  # Password for the captive fallback AP the panel raises when WiFi fails.
+  wifi_fallback_pwd: "CHANGE-ME-fallback-ap-password"
+
+  # ── Endpoints ───────────────────────────────────────────────────────────────
+  # Your Home Assistant origin (scheme + host + port, no trailing slash).
+  # Runtime online_image fetches (album art, person photos) build URLs from it.
+  ha_base_url: "http://homeassistant.local:8123"
+  # OPTIONAL image pre-sizing proxy (e.g. willnorris/imageproxy):
+  #   GET ${imageproxy_url}/<WxH>/<source-url>  →  pre-sized JPEG
+  # Serving pre-sized images keeps PSRAM use down and avoids panel-side TLS.
+  # No proxy? Point it at the same host anyway and album art will be skipped
+  # gracefully when fetches fail, or run the proxy container — recommended.
+  imageproxy_url: "http://homeassistant.local:8088"
+
+  # ── Media: mirror + Spotify feeds ───────────────────────────────────────────
+  # Per-panel "what's playing here" mirror sensor + selection helper. Create
+  # them in HA from homeassistant/examples/media_mirror.yaml (template sensor
+  # following the active player) and an input_text helper for the selection.
+  media_mirror_entity: sensor.panel_active_media          # CHANGE
+  active_player_helper: input_text.panel_active_player    # CHANGE
+  # Spotify content feeds (recent / playlists / artists) read by the media
+  # pages and the alarm music-picker. Provided by the template package in
+  # homeassistant/examples/spotify_panel.yaml (requires the HA Spotify
+  # integration). Intentionally singletons — one profile shared across panels.
+  spotify_recent_entity: sensor.spotify_panel_recent
+  spotify_playlists_entity: sensor.spotify_panel_playlists
+  spotify_artists_entity: sensor.spotify_panel_artists
+
+  # ── Media: Sonos room roster ────────────────────────────────────────────────
+  # The media module renders a fixed grid of room tiles. LVGL widgets are
+  # created at compile time, so the SLOT COUNT (7) is a hard constraint — but
+  # WHICH rooms fill the slots is config. A "slug" is the entity id minus the
+  # media_player. domain; modules rebuild the full id as media_player.${slug}.
+  # Slot order also defines the topology→tile index map, so keep slug/caption
+  # pairs aligned. The room-state source is the sonos topology sensor
+  # (homeassistant/examples/sonos_topology.yaml); this roster is the layout.
+  media_local_slug: living_room          # this panel's default play target  # CHANGE
+  media_room_0_slug: living_room                                             # CHANGE
+  media_room_0_caption: "Living Rm"
+  media_room_1_slug: kitchen                                                 # CHANGE
+  media_room_1_caption: "Kitchen"
+  media_room_2_slug: dining_room                                             # CHANGE
+  media_room_2_caption: "Dining Rm"
+  media_room_3_slug: office                                                  # CHANGE
+  media_room_3_caption: "Office"
+  media_room_4_slug: bedroom                                                 # CHANGE
+  media_room_4_caption: "Bedroom"
+  media_room_5_slug: garage                                                  # CHANGE
+  media_room_5_caption: "Garage"
+  media_room_6_slug: portable                                                # CHANGE
+  media_room_6_caption: "Portable"
+  # Label shown on the main page above the now-playing dock (usually the room
+  # this panel is mounted in, uppercase looks best).
+  local_room_label: "LIVING ROOM"
+
+  # ── Alarm: speaker roster ───────────────────────────────────────────────────
+  # The alarm page's speaker picker is a fixed 6-row roster (compile-time LVGL
+  # slots). Row 0 is ALWAYS this panel's local speaker. Glyphs are $mdi_*
+  # substitutions from the library glyph map. HA-side alarm helpers/sensors
+  # come from homeassistant/examples/alarm_panel.yaml.
+  alarm_room_player: "media_player.${media_local_slug}"   # this panel's own speaker
+  alarm_local_label: "Living Room"                         # local room label on the alarm UI
+  alarm_row_0_slug: ${media_local_slug}
+  alarm_row_0_label: "Living Room"
+  alarm_row_0_glyph: $mdi_sofa
+  alarm_row_1_slug: ${media_room_1_slug}
+  alarm_row_1_label: "Kitchen"
+  alarm_row_1_glyph: $mdi_fridge
+  alarm_row_2_slug: ${media_room_3_slug}
+  alarm_row_2_label: "Office"
+  alarm_row_2_glyph: $mdi_desk
+  alarm_row_3_slug: ${media_room_4_slug}
+  alarm_row_3_label: "Bedroom"
+  alarm_row_3_glyph: $mdi_bed
+  alarm_row_4_slug: ${media_room_5_slug}
+  alarm_row_4_label: "Garage"
+  alarm_row_4_glyph: $mdi_garage
+  alarm_row_5_slug: ${media_room_2_slug}
+  alarm_row_5_label: "Dining Rm"
+  alarm_row_5_glyph: $mdi_silverware_fork_knife
+
+  # ── People (alarm "who" picker) ─────────────────────────────────────────────
+  # Three person slots (compile-time LVGL widgets). The photo shown is the
+  # person entity's entity_picture attribute, fetched via ${ha_base_url}.
+  person_1_entity: person.alice        # CHANGE
+  person_1_name: "Alice"               # CHANGE
+  person_2_entity: person.bob          # CHANGE
+  person_2_name: "Bob"                 # CHANGE
+  person_3_entity: person.carol        # CHANGE
+  person_3_name: "Carol"               # CHANGE
+
+  # ── Energy ──────────────────────────────────────────────────────────────────
+  # Shared battery pill (top bar + screensaver + energy page):
+  battery_power_entity: sensor.battery_power      # +charge / -discharge, kW   # CHANGE
+  battery_soc_entity: sensor.battery_soc          # %                          # CHANGE
+  # Live node powers for the energy "Now" Sankey. Sign conventions assumed:
+  # all values ≥ 0, import/export split into separate sensors. See
+  # homeassistant/examples/energy_normalised.yaml for template sensors that
+  # normalise a hybrid-inverter integration into this shape.
+  en_pv_power_entity: sensor.pv_power                                          # CHANGE
+  en_consumed_power_entity: sensor.house_power                                 # CHANGE
+  en_grid_import_entity: sensor.grid_import_power                              # CHANGE
+  en_grid_export_entity: sensor.grid_export_power                              # CHANGE
+  en_ev_power_entity: sensor.ev_charger_power                                  # CHANGE
+  en_ev_status_entity: sensor.ev_charger_status                                # CHANGE
+  en_hp_power_entity: sensor.heat_pump_power                                   # CHANGE
+  en_solcast_remaining_entity: sensor.solar_forecast_remaining_today           # CHANGE (Solcast: sensor.solcast_pv_forecast_forecast_remaining_today)
+  en_tesla_soc_entity: sensor.ev_battery_level                                 # CHANGE
+  en_tesla_location_entity: device_tracker.ev_location                         # CHANGE
+  # Daily flow-path meters (the "Today" Sankey) — kWh utility meters, one per
+  # source→sink path. Created HA-side from
+  # homeassistant/examples/energy_daily_flows.yaml.
+  en_df_pv_to_home_entity: sensor.daily_flow_pv_to_home
+  en_df_pv_to_battery_entity: sensor.daily_flow_pv_to_battery
+  en_df_pv_to_grid_entity: sensor.daily_flow_pv_to_grid
+  en_df_battery_to_home_entity: sensor.daily_flow_battery_to_home
+  en_df_battery_to_grid_entity: sensor.daily_flow_battery_to_grid
+  en_df_grid_to_home_entity: sensor.daily_flow_grid_to_home
+  en_df_grid_to_battery_entity: sensor.daily_flow_grid_to_battery
+  en_df_pv_to_ev_entity: sensor.daily_flow_pv_to_ev
+  en_df_battery_to_ev_entity: sensor.daily_flow_battery_to_ev
+  en_df_grid_to_ev_entity: sensor.daily_flow_grid_to_ev
+  en_df_pv_to_hp_entity: sensor.daily_flow_pv_to_hp
+  en_df_battery_to_hp_entity: sensor.daily_flow_battery_to_hp
+  en_df_grid_to_hp_entity: sensor.daily_flow_grid_to_hp
+
+  # ── Lights (page-lights, OPTIONAL page) ─────────────────────────────────────
+  # Only consumed if the device file includes modules/page-lights.yaml. The
+  # fourth tile is always this panel's own backlight (light.${name}_lcd_backlight).
+  light_1_entity: light.living_room_sofa       # CHANGE
+  light_1_caption: "Sofa"
+  light_2_entity: light.living_room_lamp       # CHANGE
+  light_2_caption: "Lamp"
+  light_3_entity: light.living_room_cabinet    # CHANGE
+  light_3_caption: "Cabinet"
+
+  # ── Climate / hot water ─────────────────────────────────────────────────────
+  # Room circuit climate entity (heat-pump style; any climate.* with a
+  # temperature attribute works).
+  climate_entity: climate.living_room                                          # CHANGE
+  # MUST agree with the entity's min_temp/max_temp — a setpoint below min_temp
+  # is a rejected/garbage write; the commit script clamps to this floor.
+  climate_min_temp: "7.0"
+  climate_max_temp: "35.0"
+  # Domestic hot water (DHW). No tank? Point these at any placeholder entity —
+  # the hot-water page will show "—".
+  dhw_tank_temp_entity: sensor.hot_water_tank_temperature                      # CHANGE
+  dhw_setpoint_entity: sensor.hot_water_setpoint                               # CHANGE
+  dhw_boost_switch: switch.hot_water_boost                                     # CHANGE
+  dhw_wh_entity: water_heater.hot_water                                        # CHANGE
+  clim_qv_duration_entity: number.climate_quick_veto_duration                  # CHANGE (Vaillant-style quick-veto duration; optional)
+  # Common bottom-bar sensors on both climate pages:
+  clim_outdoor_entity: sensor.outdoor_temperature                              # CHANGE
+  clim_humidity_entity: sensor.living_room_humidity                            # CHANGE
+  clim_cop_entity: sensor.heat_pump_cop                                        # CHANGE (heating energy efficiency / COP)
+  clim_pressure_entity: sensor.heating_water_pressure                          # CHANGE
+
+  # ── Weather / screensaver ───────────────────────────────────────────────────
+  # Processed forecast wrapper (today + tomorrow attributes) — create from
+  # homeassistant/examples/weather_forecast.yaml over your weather.* entity.
+  weather_forecast_entity: sensor.panel_weather_forecast   # CHANGE
+
+  # ── Timer ───────────────────────────────────────────────────────────────────
+  # HA timer helper mirrored by the timer page (Assist "set a timer" targets
+  # it too when routed via HA).
+  timer_entity: timer.panel_timer                          # CHANGE
+
+  # ── Security (page-security, OPTIONAL page) ─────────────────────────────────
+  # Only consumed if the device file includes modules/page-security.yaml.
+  security_alarm_entity: alarm_control_panel.home_alarm    # CHANGE
+
+  # ── Vacuum (page-vacuum, OPTIONAL page) ─────────────────────────────────────
+  # Only consumed if a device file includes modules/page-vacuum.yaml (see
+  # examples/kitchen-panel.yaml). Entity set assumes a Roborock-style
+  # integration; rebind to whatever your vacuum exposes.
+  vacuum_entity: vacuum.robot                              # CHANGE
+  vacuum_battery_entity: sensor.robot_battery              # CHANGE
+  vacuum_status_entity: sensor.robot_status                # CHANGE
+  vacuum_room_entity: sensor.robot_current_room            # CHANGE
+  vacuum_duration_entity: sensor.robot_cleaning_time       # CHANGE
+  vacuum_progress_entity: sensor.robot_cleaning_progress   # CHANGE
+  vacuum_total_entity: sensor.robot_total_cleaning_count   # CHANGE
+  # Fault sources: errors are enum text sensors; the rest binary sensors.
+  vacuum_error_entity: sensor.robot_vacuum_error                    # CHANGE
+  vacuum_dock_error_entity: sensor.robot_dock_error                 # CHANGE
+  vacuum_water_shortage_entity: binary_sensor.robot_water_shortage  # CHANGE
+  vacuum_dirty_tank_entity: binary_sensor.robot_dirty_water_box     # CHANGE
+  vacuum_clean_tank_entity: binary_sensor.robot_clean_water_box     # CHANGE
+  vacuum_mop_attached_entity: binary_sensor.robot_mop_attached      # CHANGE
+  vacuum_box_attached_entity: binary_sensor.robot_water_box_attached # CHANGE
+  # Routine roster: primary one-tap default + the picker rows (button entities).
+  routine_default_entity: button.robot_full_clean          # CHANGE
+  routine_default_label: "FULL CLEAN"
+  clean_row_0_entity: button.robot_full_clean              # CHANGE
+  clean_row_0_label: "Full Clean"
+  clean_row_0_sub: "Default routine"
+  clean_row_0_glyph: $mdi_vacuum
+  clean_row_1_entity: button.robot_vac_then_mop            # CHANGE
+  clean_row_1_label: "Vac + Mop"
+  clean_row_1_sub: "Vacuum then mop"
+  clean_row_1_glyph: $mdi_vacuum_outline
+  clean_row_2_entity: button.robot_quick_clean             # CHANGE
+  clean_row_2_label: "Quick Clean"
+  clean_row_2_sub: "Quick tidy-up"
+  clean_row_2_glyph: $mdi_silverware_fork_knife
+
+  # ── Swelligence (OPTIONAL function) ─────────────────────────────────────────
+  # Spot pages are generated from swell-manifest.yaml — edit the manifest (spot
+  # slugs + entities) and run `python3 scripts/gen_swell_panel.py`, not this
+  # file. Requires the Swelligence HA integration; without it the F4 pages
+  # render placeholders. See the device-file comments for dropping it.

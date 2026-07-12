@@ -1,0 +1,52 @@
+{
+  "comment": "Static 8-blade iris. Place base, then either an LVGL arc (mode colour, value=%) OR the discrete petal plates (timer_iris_petal_0..7, image_recolored to the mode colour), then seps, then the time label in the centre. down=orange (remaining), up=blue (elapsed).",
+  "size": 480,
+  "centre": [
+    240,
+    240
+  ],
+  "opening_radius": 124,
+  "petal_outer_radius": 232,
+  "petal_band_width": 108,
+  "blades": 8,
+  "colors": {
+    "down": "#ff7a1e",
+    "up": "#2ba8ff",
+    "dim": "#3a4049",
+    "finished": "#ff453a"
+  },
+  "petals": {
+    "comment": "8 pre-rotated, baked petal plates (.2). Lit one at a time clockwise for a discrete 8-step aperture fill. Each PNG is the full 480x480 canvas with ONLY its blade opaque WHITE and the rest transparent \u2014 neutral white so TIMER-core can image_recolor it to the mode colour at runtime. NO runtime transform (ESP32-P4 PPA limits): rotation is BAKED into each PNG.",
+    "files": [
+      "timer_iris_petal_0.png",
+      "timer_iris_petal_1.png",
+      "timer_iris_petal_2.png",
+      "timer_iris_petal_3.png",
+      "timer_iris_petal_4.png",
+      "timer_iris_petal_5.png",
+      "timer_iris_petal_6.png",
+      "timer_iris_petal_7.png"
+    ],
+    "count": 8,
+    "recolor": "white -> mode colour via LVGL image_recolor / img_recolor_opa",
+    "seam": "vertical top (12 o'clock)",
+    "petal_0": "leading edge at the vertical-top seam",
+    "direction": "clockwise (petal 0 -> 7)",
+    "layer_order": "base -> petal_0..petal_k (recoloured) -> seps -> time label",
+    "aligned_with": [
+      "timer_iris_base.png",
+      "timer_iris_seps.png"
+    ],
+    "esphome_image_ids": [
+      "timer_petal_0",
+      "timer_petal_1",
+      "timer_petal_2",
+      "timer_petal_3",
+      "timer_petal_4",
+      "timer_petal_5",
+      "timer_petal_6",
+      "timer_petal_7"
+    ],
+    "esphome_image_type": "RGB565, transparency: alpha_channel"
+  }
+}

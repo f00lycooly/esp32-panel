@@ -1,0 +1,30 @@
+# ───────────────────────────────────────────────────────────────────────────
+# category_tile.yaml — browse/category grid tile
+#
+# A flat rounded tile with a glyph (top-left) + caption (bottom-left) for the
+# Browse / Pick-Music category grids. Sized by its parent grid cell.
+#
+# Emits a PROPERTY-MAP — merge under `button:` and add the navigate action:
+#
+#   - button:
+#       <<: !include {file: widgets/category_tile.yaml, vars: {uid: cat_albums,
+#              glyph: $mdi_album, caption: "Albums", col: 0, row: 0,
+#              bg: very_dark_gray, fg: white}}
+#       on_click: [{script.execute: browse_albums}]
+#
+# ids: ${uid} (tile), lbl_${uid} (caption). vars: uid, glyph, caption, col, row,
+#      bg, fg, glyph_font (default mdi_card_28), caption_font (default oswald_20)
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+grid_cell_column_pos: ${col}
+grid_cell_row_pos: ${row}
+grid_cell_x_align: STRETCH
+grid_cell_y_align: STRETCH
+bg_color: ${bg}
+radius: 16
+border_width: 0
+pad_all: 14
+scrollable: false
+widgets:
+  - label: {clickable: false, align: TOP_LEFT, text: $glyph, text_font: $glyph_font, text_color: $fg}
+  - label: {id: lbl_$uid, clickable: false, align: BOTTOM_LEFT, text: "$caption", text_font: $caption_font, text_color: $fg}

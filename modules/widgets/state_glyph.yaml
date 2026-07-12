@@ -1,0 +1,24 @@
+# ───────────────────────────────────────────────────────────────────────────
+# state_glyph.yaml — single MDI glyph whose icon + colour track a state
+#
+# A bare label holding one MDI glyph, recoloured/relabelled by a page lambda to
+# reflect a state (battery flow, play/pause, HVAC mode, connection, …). The
+# generic primitive behind every "glyph that means something" on the panel.
+#
+# Emits a PROPERTY-MAP. Merge under `label:`; the page drives it via the stable
+# ids `${uid}` (the label):
+#
+#   - label:
+#       <<: !include {file: widgets/state_glyph.yaml, vars: {uid: hp_state,
+#              glyph: $mdi_heat_pump, glyph_font: mdi_card_28, fg: gray500}}
+#   # later, from a refresh lambda:
+#   #   lv_label_set_text(id(hp_state), "$mdi_fire");
+#   #   lv_obj_set_style_text_color(id(hp_state), lv_color_hex(0xF37320), 0);
+#
+# vars: uid, glyph, glyph_font (default mdi_card_28), fg
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+clickable: false
+text: ${glyph}
+text_font: ${glyph_font}
+text_color: ${fg}

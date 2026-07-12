@@ -1,0 +1,19 @@
+---
+# nav2d-swipe.yaml — the four swipe handlers, merged into each feature page's
+# lvgl page config via `<<: !include modules/nav2d-swipe.yaml`. Replaces
+# common/swipe_navigation.yaml (the old flat left/right ring). All four delegate
+# to the nav_go resolver in nav2d.yaml.
+#
+#   ↑ swipe up    → next FUNCTION (dir 0)      ← swipe left  → next PAGE (dir 2)
+#   ↓ swipe down  → prev FUNCTION (dir 1)      → swipe right → prev PAGE (dir 3)
+#
+# Polarity (swipe-left advances, swipe-up advances) is the common touch
+# convention; flip the dir codes here if on-device feel wants the inverse.
+on_swipe_up:
+  - script.execute: {id: nav_go, dir: 0}
+on_swipe_down:
+  - script.execute: {id: nav_go, dir: 1}
+on_swipe_left:
+  - script.execute: {id: nav_go, dir: 2}
+on_swipe_right:
+  - script.execute: {id: nav_go, dir: 3}

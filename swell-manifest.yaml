@@ -1,0 +1,35 @@
+# swell-manifest.yaml — single source of truth for the Swelligence panel function.
+# Expanded by scripts/gen_swell_panel.py into modules/generated/swell-*.yaml
+# (per-spot HA bindings + lvgl pages) BEFORE `make compile`. Edit here + regenerate;
+# never hand-edit the generated files.
+# Constraint: nav2d caps at 4 pages/function (fixed dot widgets), so ≤4 spots until
+# nav2d is widened. The nav contract (page count + matrix row for function 4) is
+# GENERATED from this list into modules/generated/swell-nav.yaml, so adding
+# or removing a spot here needs NO hand-edit in waveshare-p4-86-panel.yaml.
+
+function: 4                       # nav2d function index for Swelligence (F4)
+
+spots:                            # one panel page each, in nav (swipe ←/→) order
+  # CHANGE: one entry per Swelligence spot configured in your HA instance.
+  # The slug must match the HA entity slug → sensor.swelligence_<slug>_*.
+  - slug: north_beach             # HA entity slug → sensor.swelligence_<slug>_*
+    entity: sensor.swelligence_north_beach_panel_detail
+  - slug: south_beach
+    entity: sensor.swelligence_south_beach_panel_detail
+  - slug: west_reef
+    entity: sensor.swelligence_west_reef_panel_detail
+
+# Sport pill slots, shared across all spots. The per-sport score entity is
+# sensor.swelligence_<slug>_<key>_suitability; a spot not configured for a sport
+# yields an 'unavailable' entity → that pill simply never shows. So this is a
+# SUPERSET; declaring a sport a spot lacks costs nothing. <key> is the entity
+# sport-slug (derived from the sport LABEL, e.g. Wing foil → wing_foil).
+sports:
+  - key: kitesurf
+    label: Kite
+  - key: wing_foil
+    label: Wing
+  - key: surf
+    label: Surf
+  - key: sup
+    label: SUP

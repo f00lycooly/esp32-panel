@@ -1,0 +1,3 @@
+lvgl_screenshot:
+  pages:
+    - {name: info, page: info_screen}

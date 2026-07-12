@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# page-room.yaml — SKELETON STUB for the generic tile-grid room page
+#. Reachable now (valid nav-wired LVGL page); the actual
+# roster-driven tile grid is built separately as the "card" work.
+#
+# CONTRACT (to be implemented): a page-shell grid of N tiles, each bound by a
+# per-panel substitution roster — room_tile_<i>_entity / _caption / _glyph /
+# _kind (kind ∈ light|switch|scene|script). Reuses widgets/tile_toggle.yaml +
+# state_glyph.yaml; fixed compile-time slot max, zero-filled like the media
+# roster. The fixed page-lights grid migrates onto this in passing.
+#
+# nav coords are parameterised so each panel can place this function without
+# renumbering (the pattern the reused pages should later adopt).
+# ─────────────────────────────────────────────────────────────────────────────
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_room: !include capture/${capture_mode}/room.yaml
+
+substitutions:
+  room_nav_f: "1"        # Kitchen default; Hallway overrides to "0"
+  room_nav_p: "0"
+
+lvgl:
+  pages:
+    - id: room_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: $room_nav_f, p: $room_nav_p}
+      widgets:
+        - label:
+            align: TOP_MID
+            y: 88
+            text: "ROOM"
+            text_font: oswald_24
+            text_color: 0xFFFFFF
+        - label:
+            align: CENTER
+            text: "skeleton — tile-grid room card TBD"
+            text_font: oswald_20
+            text_color: 0x9E9E9E

@@ -1,0 +1,78 @@
+# Display screenshot capture — GENERIC ENGINE (DIAGNOSTIC include).
+#
+# Lets us pull screenshots of the live UI (e.g. to verify the new BLE/Assist
+# service and layout work) without standing in front of the panel.
+#
+# DEVICE-AGNOSTIC: this file no longer hard-lists pages.
+# Each page module self-registers the screens it owns via its capture/ include
+# (capture/on/<page>.yaml). To enable capture on a panel, do BOTH:
+#   1. set `capture_mode: "on"` in the device's top-level substitutions, and
+#   2. include this engine: `display_capture: !include modules/display-capture.yaml`.
+# capture_mode MUST be a device top-level substitution — page modules read
+# ${capture_mode} in their include path, and ESPHome only resolves include-path
+# substitutions from the device top level (a value set inside a sibling package
+# is not reliably visible there). With the mode on, every included page resolves
+# capture/on/<page>.yaml and concatenates its entries into the merged
+# lvgl_screenshot.pages list. The old per-device fork (display-capture-kitchen.yaml)
+# is gone.
+#
+# DIAGNOSTIC-ONLY: this package is self-contained — the
+# -DLV_USE_SNAPSHOT=1 build flag, the lvgl_screenshot external component, and the
+# :8080 HTTP endpoint all live here. A PRODUCTION panel sets `capture_mode: "off"`
+# (so every page resolves the inert capture/off/<page>.yaml) AND omits this
+# include — carrying no snapshot codegen and no always-on endpoint. A dev
+# (dev) panel keeps it for the screenshot-capture workflow.
+#
+# NOTE on component choice: the generic `display_capture` component only
+# supports DisplayBuffer/RGB displays — NOT mipi_dsi or LVGL, which is what
+# this panel uses. We use lvgl_screenshot (originally dcgrove/esphome-lvgl-
+# screenshot), which grabs the LVGL frame directly.
+#
+# It's VENDORED into components/lvgl_screenshot/ rather than pulled from git:
+# the upstream is LVGL-v8-only and won't compile against ESPHome's LVGL v9.5
+# (2026.4.0+). Our local copy is ported to the v9 API — see the header comment
+# in components/lvgl_screenshot/lvgl_screenshot.cpp for the specifics.
+#
+# `path: components` resolves relative to the ESPHome config dir (via
+# CORE.relative_config_path) — i.e. esphome/components/ in the repo and
+# /config/components/ in the container (deployed by the Makefile `components`
+# target).
+#
+# Endpoint (own HTTP port, independent of web_server):
+#   GET http://<device-ip>:8080/screenshot   -> JPEG of the current screen
+#
+# Capture uses lv_snapshot_take() to render the active screen on demand, so it
+# works regardless of LVGL's render mode (this panel runs PARTIAL — the active
+# render buffer only holds the last dirty region, not the whole frame). That
+# requires LV_USE_SNAPSHOT.
+#
+# ESPHome generates its OWN lv_conf.h and does NOT enable Kconfig for lvgl
+# (LV_KCONFIG_PRESENT is gated on CONFIG_LV_COLOR_DEPTH, which ESPHome never
+# sets), so CONFIG_LV_USE_SNAPSHOT=y via sdkconfig_options is ignored. ESPHome's
+# lv_conf.h also omits LV_USE_SNAPSHOT entirely, so it defaults to 0. The one
+# lever that wins is a global -D: lv_conf_internal.h guards the symbol with
+# `#ifndef LV_USE_SNAPSHOT`, so a command-line definition takes precedence over
+# the built-in default. build_flags apply to every TU including the lvgl
+# managed component, which is where lv_snapshot.c lives.
+---
+esphome:
+  platformio_options:
+    build_flags:
+      - "-DLV_USE_SNAPSHOT=1"
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [lvgl_screenshot]
+
+# Component config only — NO `pages:` here. The page roster is assembled by
+# list-merge from each included page module's capture/on/<page>.yaml contribution
+# (and, when swelligence is included, the generated display_capture_swell package). To make a
+# page screenshot-able, add the capture include to THAT page module — never here.
+#
+# GET /screenshot?page=<name> switches the panel to that page, lets it settle,
+# captures, then restores the page the user was on. Without ?page it captures
+# the live screen. Names are the query keys; page: is the LVGL page id.
+lvgl_screenshot:
+  port: 8080

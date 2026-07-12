@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#
+# esp32-panel pre-commit hook — install with `make hooks`
+# (copies this file to .git/hooks/pre-commit).
+#
+# Blocks the commit if scripts/secret-scan.sh finds private/site-identifying
+# content anywhere in the tracked tree. The scan covers the working tree, not
+# just the staged diff — stricter than strictly necessary, but a dirty working
+# tree that fails the scan is something you want to know about before pushing
+# anyway.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+if ! bash "$ROOT/scripts/secret-scan.sh"; then
+  echo >&2
+  echo "commit blocked by secret-scan. Fix the hits above (or add a narrow," >&2
+  echo "path-anchored regex to scripts/secret-scan-allow.txt if provably benign)." >&2
+  exit 1
+fi

@@ -1,0 +1,97 @@
+---
+# Popup system — shared scrim, close script, and shared color-picker assets.
+#
+# Substitution variables (set in top-level page):
+#   popup_timeout_seconds - auto-close timeout in seconds (required, e.g., '120')
+#
+# Architecture
+# ------------
+# All popups live in LVGL's `top_layer` (a singleton container that floats
+# above every page). Each popup is a sibling `obj` widget inside `top_layer`,
+# hidden by default, shown on demand.
+#
+# A single dim scrim (`popup_scrim`) also lives in top_layer:
+#   - Provides the dim backdrop behind the active popup
+#   - Catches any tap outside the popup (the popup is 95% size, scrim is 100%)
+#     and closes everything
+#
+# Each popup file extends the `popup_close` script to register its own hide:
+#
+#   script:
+#     - id: !extend popup_close
+#       then:
+#         - lvgl.widget.hide: popup_<name>
+#
+# To open a popup from anywhere:
+#
+#   - lvgl.widget.show: popup_scrim
+#   - lvgl.widget.show: popup_<name>
+#   - script.execute: popup_start_timeout
+#
+# Auto-close timeout
+# ------------------
+# Popups can automatically close after a configurable timeout (default 120 seconds).
+# Set the substitution variable `popup_timeout_seconds` in the top-level page:
+#
+#   substitutions:
+#     popup_timeout_seconds: '120'
+#
+# Call `popup_start_timeout` when opening a popup to activate the timeout.
+# The timeout is automatically cancelled when `popup_close` is called (e.g., when
+# the user taps outside the popup or clicks a close button).
+#
+# Z-order note: widgets render in include order. This file must be included
+# BEFORE any popup-consuming file so the scrim renders below all popups.
+#
+# Shared assets defined here:
+#   - hue_ring_img / kelvin_ring_img : SVG rings reused by per-instance light
+#     color popups (see ui/light/remote.yaml and ui/light/local.yaml).
+
+globals:
+  # Popup auto-close timeout in seconds (default 120 seconds)
+  - id: popup_timeout_seconds
+    type: int
+    initial_value: '${popup_timeout_seconds}'
+
+image:
+  rgb565:
+    alpha_channel:
+      - file: 'esphome-modular-lvgl-buttons/assets/images/hue_ring.svg'
+        id: hue_ring_img
+        # ESPHome rasterizes the SVG via resvg_py at compile time to this size.
+        # Bump both numbers (and the matching arc widths in consumers) to
+        # render at higher resolution.
+        resize: 300x300
+      - file: 'esphome-modular-lvgl-buttons/assets/images/kelvin_ring.svg'
+        id: kelvin_ring_img
+        resize: 300x300
+
+script:
+  # Start popup auto-close timeout. Call this whenever a popup opens.
+  - id: popup_start_timeout
+    then:
+      - delay: !lambda 'return id(popup_timeout_seconds) * 1000;'
+      - script.execute: popup_close
+
+  # Extended by each popup file to hide its own widget.
+  - id: popup_close
+    then:
+      - lvgl.widget.hide: popup_scrim
+
+lvgl:
+  top_layer:
+    widgets:
+      # Scrim MUST be first so all popups render above it.
+      - obj:
+          id: popup_scrim
+          hidden: true
+          width: 100%
+          height: 100%
+          bg_color: black
+          bg_opa: 60%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          clickable: true
+          on_click:
+            - script.execute: popup_close

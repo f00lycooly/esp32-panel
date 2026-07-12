@@ -1,0 +1,108 @@
+---
+# Info popup — same content as pages/info.yaml but presented as a modal
+# popup centered over the current page (95% of screen, dim backdrop).
+#
+# To open:
+#   - lvgl.widget.show: popup_scrim
+#   - lvgl.widget.show: popup_info
+
+# Register this popup with the shared close script so the scrim's
+# tap-outside-to-close also hides this popup.
+script:
+  - id: !extend popup_close
+    then:
+      - lvgl.widget.hide: popup_info
+
+lvgl:
+  top_layer:
+    widgets:
+      - obj:
+          id: popup_info
+          hidden: true
+          align: CENTER
+          width: 95%
+          height: 95%
+          radius: 12
+          bg_color: $bg_color
+          bg_opa: COVER
+          border_width: 2
+          border_color: white
+          pad_all: 12
+          # Catch taps inside the popup so they DON'T fall through to the
+          # scrim (siblings don't bubble, but clickable + opaque bg ensures
+          # the hit is consumed here).
+          clickable: true
+          widgets:
+            # Content grid — mirrors pages/info.yaml
+            - obj:
+                width: 100%
+                height: 100%
+                pad_all: 0
+                border_width: 0
+                bg_opa: transp
+                layout:
+                  type: GRID
+                  grid_rows: [content, content, content, content, content, content, content, content, content, content]
+                  grid_columns: [FR(45), FR(55)]
+                  pad_column: 4
+                  pad_row: 5
+                widgets:
+                  - label:
+                      grid_cell_column_pos: 0
+                      grid_cell_row_pos: 1
+                      grid_cell_x_align: STRETCH
+                      grid_cell_y_align: CENTER
+                      text: "ESPHome Version:"
+                  - label:
+                      grid_cell_column_pos: 1
+                      grid_cell_row_pos: 1
+                      grid_cell_x_align: STRETCH
+                      grid_cell_y_align: CENTER
+                      text_color: white
+                      # NOTE: id reused via lambda would conflict with info.yaml's
+                      # esphome_version_label. Bind to a popup-scoped label and
+                      # update via the same sensor (or duplicate the binding).
+                      # For now leave as static — wire to sensor in a follow-up.
+                      text: "(see Info page)"
+                  - label:
+                      grid_cell_column_pos: 0
+                      grid_cell_row_pos: 2
+                      grid_cell_x_align: STRETCH
+                      grid_cell_y_align: CENTER
+                      text: "Build Date:"
+                  - label:
+                      grid_cell_column_pos: 1
+                      grid_cell_row_pos: 2
+                      grid_cell_x_align: STRETCH
+                      grid_cell_y_align: CENTER
+                      text_color: white
+                      text:
+                        format: "%s - %s"
+                        args: [__DATE__, __TIME__]
+                  - label:
+                      grid_cell_column_pos: 0
+                      grid_cell_row_pos: 3
+                      grid_cell_x_align: STRETCH
+                      grid_cell_y_align: CENTER
+                      text: "Popup demo"
+                  - label:
+                      grid_cell_column_pos: 1
+                      grid_cell_row_pos: 3
+                      grid_cell_x_align: STRETCH
+                      grid_cell_y_align: CENTER
+                      text_color: white
+                      text: "Tap outside or Close"
+
+            # Close button — bottom right of popup
+            - button:
+                align: bottom_right
+                radius: 15
+                width: 100
+                height: 50
+                widgets:
+                  - label:
+                      text_color: white
+                      align: center
+                      text: "Close"
+                on_short_click:
+                  - script.execute: popup_close

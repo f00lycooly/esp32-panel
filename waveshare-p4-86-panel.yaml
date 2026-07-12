@@ -1,0 +1,166 @@
+# Waveshare ESP32-P4 86-panel — composition root
+#
+# Thin composition root. Hardware lives in a local package based on known-working
+# chrisdunnname firmware; the application is split into focused packages:
+# foundation (device core), assist (voice/audio stack), ui-shared (LVGL
+# singletons + shared sensors), one package per LVGL page.
+#
+# Package order matters: ESPHome concatenates lists in declaration order, and
+# the page packages below define the swipe-navigation page order. main_page
+# must come first (default boot page).
+#
+# ── Getting started ─────────────────────────────────────────────────────────
+#   1. cp user-config.yaml.example user-config.yaml   # your site bindings
+#   2. cp secrets.yaml.example secrets.yaml           # wifi + api key
+#   3. Edit both, then: esphome run waveshare-p4-86-panel.yaml
+#
+# ALL site-specific values (entity ids, endpoints, names, rosters) live in
+# user-config.yaml. This file carries only universal/structural substitutions
+# and the package list. Substitutions set HERE (device file) override
+# package-provided ones, so per-panel forks of this file may also override any
+# user-config key inline (see examples/).
+
+substitutions:
+  # Display-capture mode: "on" turns on the screenshot page roster — every page
+  # module self-registers its screens for the :8080/screenshot endpoint. Pairs
+  # with the display_capture package includes below. A production panel keeps
+  # this "off" AND omits those includes (no snapshot codegen, no :8080
+  # endpoint). Flip to "on" + uncomment the display_capture packages for a dev
+  # build. Page modules read ${capture_mode} in their capture include path.
+  capture_mode: "off"
+
+  # ESPHome project metadata stamped into the firmware.
+  project_name: "foolycooly.esp32-panel"
+  project_version: "2026.07.11"
+
+  # Production logger level. INFO compiles out the scattered DEBUG/VERBOSE
+  # logger.log calls; raise to DEBUG in a dev build variant when diagnosing.
+  log_level: INFO
+
+  # FreeRTOS run-time stats: "y" feeds the perf-overlay's per-core CPU% but
+  # adds a per-second sampler. Production default "n" (the perf_overlay package
+  # below is also commented out — enable both together when profiling).
+  freertos_runtime_stats: "n"
+
+  # ── 2D navigation page contract ────────────────────────────────────────────
+  # The SINGLE source of truth for the function × page swipe matrix. nav2d.yaml
+  # consumes these instead of duplicating hard-coded arrays, so adding /
+  # removing / reordering a reusable screen is a composition-root edit
+  # (alongside the page_* includes below) rather than a nav2d internals edit.
+  # LVGL constraint: the position-indicator dots are fixed widgets — ≤5
+  # functions (vertical dots), ≤4 pages per function (horizontal dots).
+  # Vertical swipe = function; horizontal = page; HOME is page index 0.
+  #
+  # nav_pages_matrix: one row per function, page objects HOME-first; keep it
+  # aligned with nav_npages and the page_* include order. nav_functions is the
+  # number of rows.
+  #
+  # nav_pages_per_func is the 2D array's COLUMN dimension, a fixed LVGL cap (4
+  # hdot widgets); rows with fewer pages zero-fill the remainder. Keeping the
+  # cap (not the current max) means a function growing up to 4 pages needs no
+  # edit here.
+  #
+  # The Swelligence function (last row, F4) is MANIFEST-DRIVEN: its page count
+  # and matrix row are emitted by scripts/gen_swell_panel.py into
+  # modules/generated/swell-nav.yaml and referenced below as ${swell_npages} /
+  # ${swell_matrix_row} (package swell_nav). Add/remove a spot in
+  # swell-manifest.yaml + regenerate — no hand-edited nav here.
+  nav_functions: "5"
+  nav_pages_per_func: "4"
+  nav_npages: "{2, 2, 2, 2, ${swell_npages}}"
+  nav_pages_matrix: >-
+    { id(main_page)->obj, id(multiroom_page)->obj },
+    { id(climate_page)->obj, id(hotwater_page)->obj },
+    { id(timer_page)->obj, id(alarm_page)->obj },
+    { id(energy_page)->obj, id(today_page)->obj },
+    ${swell_matrix_row}
+
+packages:
+  # SITE CONFIG — must be first. Copy user-config.yaml.example to
+  # user-config.yaml and edit; it holds every site-specific substitution
+  # (identity, endpoints, entity ids, media/alarm rosters, people, energy,
+  # lights, climate, weather, timer, security, vacuum, swelligence).
+  user_config: !include user-config.yaml
+  hardware: !include
+    file: modules/hardware/p4-86-panel.yaml
+    vars:
+      rotation: "0"
+  foundation: !include modules/ui-foundation.yaml
+  # BLE proxy / presence tracker — extracted from the hardware package so
+  # panels can opt out (comment out to disable).
+  ble_proxy: !include modules/ble-proxy.yaml
+  assist: !include modules/assist.yaml
+  # DIAGNOSTIC: HTTP screenshot endpoint (GET :8080/screenshot) for verifying
+  # the live LVGL UI remotely. Self-contained (build flag + component +
+  # endpoint) — a PRODUCTION build omits these two packages AND keeps
+  # capture_mode "off" above; a dev build enables both together. See
+  # modules/display-capture.yaml for why this uses lvgl_screenshot rather than
+  # the mipi_dsi-incompatible display_capture.
+  # display_capture: !include modules/display-capture.yaml
+  # Manifest-driven capture-page registration for the swell pages: the reusable
+  # pages self-register from their own page modules via the capture/ gate; the
+  # per-spot swellN pages are GENERATED, so they're concatenated here via the
+  # same package list-merge onto lvgl_screenshot.pages. Belongs to the
+  # display_capture DIAGNOSTIC scope — enable together with display_capture.
+  # display_capture_swell:
+  #   lvgl_screenshot:
+  #     pages: !include modules/generated/swell-capture-pages.yaml
+  ui_shared: !include modules/ui-shared.yaml
+  # 2D function×page navigation engine. Replaces the flat left/right swipe
+  # ring: vertical swipe = function (Main/Climate/Timer/Energy/Swell),
+  # horizontal = page within. Each feature page wires it via nav2d-swipe.yaml +
+  # an on_load nav_arrive. Drives the top_layer position dots.
+  nav2d: !include modules/nav2d.yaml
+  # Full-screen takeover framework: suspends swipe-nav, tracks the return
+  # screen, provides a floating back chevron. Used by Settings (the cog) and
+  # the Pick Music / Browse / Set Timer / alarm pickers.
+  takeover: !include modules/takeover.yaml
+  # Standard top bar: ONE top_layer bar over every function page — battery pill
+  # (→Energy) · clock+date · settings cog (HA-status ring). Visibility is owned
+  # by nav_chrome; one topbar_refresh paints it + the screensaver battery pill.
+  top_bar: !include modules/top-bar.yaml
+  # Voice-assistant phase overlay (top_layer) — HAL / GLaDOS persona eye driven
+  # by voice_assistant_phase. After ui_shared so its fonts (oswald_24) resolve.
+  voice_overlay: !include modules/voice-overlay.yaml
+  # On-screen perf-monitor HUD (top_layer) — FPS / loop time / heap / PSRAM,
+  # gated behind a "Perf overlay" switch (off by default). DIAGNOSTIC-ONLY:
+  # a production panel omits this AND leaves freertos_runtime_stats "n" so no
+  # per-second sampler or run-time-stats accounting runs. Uncomment (and flip
+  # freertos_runtime_stats to "y" for per-core CPU%) when profiling.
+  # perf_overlay: !include modules/perf-overlay.yaml
+  page_main: !include modules/page-main.yaml
+  page_energy: !include modules/page-energy.yaml
+  page_climate: !include modules/page-climate.yaml
+  # Live Assist-timer page: aperture-iris gauge, count-down/up modes.
+  # Auto-shown when a timer starts; in the swipe ring next to climate.
+  page_timer: !include modules/page-timer.yaml
+  # Alarm function: list + one-page edit + Speaker/Music/Who sub-takeovers +
+  # global cross-panel ringing overlay. HA-backed by the
+  # homeassistant/examples/alarm_panel.yaml package sensors.
+  page_alarm: !include modules/page-alarm.yaml
+  # Swelligence surf/wind conditions FUNCTION (F4) — OPTIONAL: requires the
+  # Swelligence HA integration. One horizontal spot page per manifest spot,
+  # bound to per-spot detail sensors (sensor.swelligence_<spot>_panel_detail).
+  # Without the integration the pages render with "—" placeholders. To drop
+  # the function entirely: comment out swell_nav + page_swelligence AND shrink
+  # the nav contract above (nav_functions "4", nav_npages "{2, 2, 2, 2}",
+  # remove the ${swell_matrix_row} line).
+  swell_nav: !include modules/generated/swell-nav.yaml
+  page_swelligence: !include modules/page-swelligence.yaml
+  # Media home lives on main_page; page-media stays included as the media
+  # BACKEND — sensors, scripts, online_image, Rooms/Playlists modals
+  # (top_layer). It no longer defines its own page.
+  page_media: !include modules/page-media.yaml
+  # Terminal clock/weather screensaver — shown by on_idle. Declared skip:true
+  # so it is never reachable by swipe (idle-only).
+  page_screensaver: !include modules/page-screensaver.yaml
+  # info_screen is the library's WiFi/MAC/IP/version page. Under the 2D nav
+  # engine (nav2d.yaml) the swipe matrix is the nav_pages_matrix contract
+  # above — info_screen is NOT a member of it and NOT reachable by swipe. It is
+  # an lvgl page reached ONLY via the settings cog on main_page (page show).
+  # Kept here so the composition root owns all page includes in one place.
+  info_screen: !include modules/page-info.yaml
+  # Optional pages not included on this device by default — add per-panel:
+  #   page_lights: !include modules/page-lights.yaml
+  #   page_security: !include modules/page-security.yaml
+  # (both predate nav2d and use the flat swipe ring — see examples/)

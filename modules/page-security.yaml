@@ -1,0 +1,164 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# page-security.yaml — Security page package for the panel.
+# Included as a package by waveshare-p4-86-panel.yaml.
+#
+# Owns: the security_page LVGL page (alarm state card, Arm Home/Away/Night
+# buttons, disarm keypad modal), the alarm_state Home Assistant text_sensor
+# that tints the state card, and the alarm_code_entry global keypad buffer.
+#
+# Cross-package IDs resolved at package merge: fonts/colours/styles
+# (theme/library packages), main_page (page-main.yaml, back-button target).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_security: !include capture/${capture_mode}/security.yaml
+
+globals:
+  # Alarm disarm keypad buffer (security_page) — digits accumulate here, passed
+  # to alarm_control_panel.alarm_disarm on submit (HA validates the code).
+  - id: alarm_code_entry
+    type: std::string
+    restore_value: false
+
+text_sensor:
+  # Alarm-panel state (security_page — ) → background tint + status.
+  - platform: homeassistant
+    id: alarm_state
+    entity_id: ${security_alarm_entity}
+    on_value:
+      - lambda: !lambda |-
+          std::string s = x;
+          lv_color_t tint, txt;
+          const char* label;
+          if (s == "disarmed")        { tint = lv_color_hex(0x16331A); txt = lv_color_hex(0x7ACF38); label = "DISARMED"; }
+          else if (s == "arming")     { tint = lv_color_hex(0x3A3413); txt = lv_color_hex(0xF4A900); label = "ARMING"; }
+          else if (s == "pending")    { tint = lv_color_hex(0x3A3413); txt = lv_color_hex(0xF4A900); label = "PENDING"; }
+          else if (s == "triggered")  { tint = lv_color_hex(0x3A1313); txt = lv_color_hex(0xFF0000); label = "TRIGGERED"; }
+          else if (s == "armed_home") { tint = lv_color_hex(0x132A3A); txt = lv_color_hex(0x01B4DE); label = "ARMED HOME"; }
+          else if (s == "armed_away") { tint = lv_color_hex(0x132A3A); txt = lv_color_hex(0x01B4DE); label = "ARMED AWAY"; }
+          else if (s == "armed_night"){ tint = lv_color_hex(0x132A3A); txt = lv_color_hex(0x01B4DE); label = "ARMED NIGHT"; }
+          else                        { tint = lv_color_hex(0x1A1A1A); txt = lv_color_hex(0x9E9E9E); label = "UNKNOWN"; }
+          lv_obj_set_style_bg_color(id(sec_card), tint, 0);
+          lv_obj_set_style_text_color(id(lbl_alarm_state), txt, 0);
+          lv_label_set_text(id(lbl_alarm_state), label);
+
+lvgl:
+  pages:
+    # ═════════════════════ SECURITY (alarm panel) ═════════════════════
+    - id: security_page
+      styles: page_style
+      <<: !include
+        file: ../esphome-modular-lvgl-buttons/common/swipe_navigation.yaml
+      widgets:
+        - button:
+            id: back_security
+            align: TOP_LEFT
+            x: 8
+            y: 8
+            width: 56
+            height: 56
+            radius: 28
+            bg_color: very_dark_gray
+            widgets:
+              - label: {align: center, text: $mdi_chevron_left, text_font: mdi_card_28, text_color: white}
+            on_click:
+              - lvgl.page.show: main_page
+        - label: {align: TOP_MID, y: 18, text: "Security", styles: header_title}
+
+        # State card (background tint driven by alarm_state text_sensor)
+        - obj:
+            id: sec_card
+            styles: card
+            bg_color: dark_gray
+            align: TOP_MID
+            y: 70
+            width: 700
+            height: 200
+            scrollable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+            widgets:
+              - label: {align: center, text: $mdi_shield_home, text_font: mdi_icon_40, text_color: white}
+              - label: {id: lbl_alarm_state, text_font: nunito_42, text_color: gray500, text: "—"}
+
+        # Arm buttons (no code) + Disarm (opens keypad)
+        - obj:
+            align: BOTTOM_MID
+            y: -16
+            width: 700
+            height: 380
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1)]
+              pad_column: 16
+              pad_row: 16
+            widgets:
+              - button: {id: arm_home, styles: card, grid_cell_column_pos: 0, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 6}, widgets: [{label: {text: $mdi_shield_home, text_font: mdi_icon_40, text_color: ep_blue}}, {label: {text: "Arm Home", text_font: nunito_24, text_color: white}}], on_click: [{homeassistant.action: {action: alarm_control_panel.alarm_arm_home, data: {entity_id: "${security_alarm_entity}"}}}]}
+              - button: {id: arm_away, styles: card, grid_cell_column_pos: 1, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 6}, widgets: [{label: {text: $mdi_shield_lock, text_font: mdi_icon_40, text_color: ep_blue}}, {label: {text: "Arm Away", text_font: nunito_24, text_color: white}}], on_click: [{homeassistant.action: {action: alarm_control_panel.alarm_arm_away, data: {entity_id: "${security_alarm_entity}"}}}]}
+              - button: {id: arm_night, styles: card, grid_cell_column_pos: 0, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 6}, widgets: [{label: {text: $mdi_shield_home, text_font: mdi_icon_40, text_color: violet}}, {label: {text: "Arm Night", text_font: nunito_24, text_color: white}}], on_click: [{homeassistant.action: {action: alarm_control_panel.alarm_arm_night, data: {entity_id: "${security_alarm_entity}"}}}]}
+              - button: {id: btn_disarm, styles: card, border_color: red, border_width: 2, grid_cell_column_pos: 1, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 6}, widgets: [{label: {text: $mdi_lock_open, text_font: mdi_icon_40, text_color: red}}, {label: {text: "Disarm", text_font: nunito_24, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) = ""; lv_label_set_text(id(lbl_kbd_display), "");'}, {lvgl.widget.show: kbd_modal}]}
+
+        # ───── Disarm keypad modal (hidden until Disarm tapped) ─────
+        - obj:
+            id: kbd_modal
+            hidden: true
+            x: 0
+            y: 0
+            width: 720
+            height: 720
+            bg_color: black
+            bg_opa: 90%
+            border_width: 0
+            radius: 0
+            scrollable: false
+            widgets:
+              - label: {align: TOP_MID, y: 70, text: "Enter disarm code", text_font: nunito_24, text_color: white}
+              - label: {id: lbl_kbd_display, align: TOP_MID, y: 120, text_font: nunito_48, text_color: ep_orange, text: ""}
+              - button:
+                  align: TOP_RIGHT
+                  x: -18
+                  y: 18
+                  width: 56
+                  height: 56
+                  radius: 28
+                  bg_color: very_dark_gray
+                  widgets:
+                    - label: {align: center, text: $mdi_close, text_font: mdi_card_28, text_color: white}
+                  on_click:
+                    - lvgl.widget.hide: kbd_modal
+              - obj:
+                  align: BOTTOM_MID
+                  y: -40
+                  width: 440
+                  height: 460
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout:
+                    type: GRID
+                    grid_columns: [FR(1), FR(1), FR(1)]
+                    grid_rows: [FR(1), FR(1), FR(1), FR(1)]
+                    pad_column: 12
+                    pad_row: 12
+                  widgets:
+                    - button: {styles: nav_tile, grid_cell_column_pos: 0, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "1", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "1"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 1, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "2", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "2"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 2, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "3", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "3"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 0, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "4", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "4"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 1, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "5", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "5"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 2, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "6", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "6"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 0, grid_cell_row_pos: 2, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "7", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "7"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 1, grid_cell_row_pos: 2, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "8", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "8"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 2, grid_cell_row_pos: 2, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "9", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "9"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 0, grid_cell_row_pos: 3, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: $mdi_backspace, text_font: mdi_card_28, text_color: gray400}}], on_click: [{lambda: 'if (!id(alarm_code_entry).empty()) id(alarm_code_entry).pop_back(); lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {styles: nav_tile, grid_cell_column_pos: 1, grid_cell_row_pos: 3, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, widgets: [{label: {align: center, text: "0", text_font: nunito_42, text_color: white}}], on_click: [{lambda: 'id(alarm_code_entry) += "0"; lv_label_set_text(id(lbl_kbd_display), std::string(id(alarm_code_entry).size(), (char)0x2A).c_str());'}]}
+                    - button: {grid_cell_column_pos: 2, grid_cell_row_pos: 3, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, bg_color: ep_green, radius: 20, widgets: [{label: {align: center, text: $mdi_check, text_font: mdi_card_28, text_color: black}}], on_click: [{homeassistant.action: {action: alarm_control_panel.alarm_disarm, data: {entity_id: "${security_alarm_entity}"}, variables: {code: 'return id(alarm_code_entry);'}, data_template: {code: "{{ code }}"}}}, {lvgl.widget.hide: kbd_modal}]}
+

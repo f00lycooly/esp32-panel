@@ -1,0 +1,210 @@
+---
+# Waveshare ESP32-S3 Touch LCD 4" (Version 4) hardware configuration file
+# https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-4
+#
+# Rev 4 differs from Rev 3:
+#  - I/O expander is CH32V003 @ 0x24 (Rev 3 was TCA9554/PCA9554 @ 0x20)
+#  - Backlight is hardware PWM inside the CH32V003 (no LEDC on GPIO44)
+#  - Adds buzzer (EXIO6 / BEE_EN) and PCF8563 RTC @ 0x51
+#  - LCD panel is mounted 180° vs Rev 3 — handled by LVGL rotation
+
+esphome:
+  min_version: 2026.5.0
+  project:
+    name: "Waveshare.ESP32-S3-touch-lcd-4-V4"
+    version: "1.1"
+  platformio_options:
+    board_build.flash_mode: dio
+  # GT911 reset/address-select must run AFTER the CH32V003 expander
+  # is up (priority IO=900) but BEFORE the touchscreen component
+  # (priority DATA=600). Priority 800 sits cleanly between them.
+  # Both TP_RST and TP_INT live on the expander, so we cannot meet
+  # the GT911 datasheet's microsecond-level timing - but the chip is
+  # forgiving as long as INT is held low across the RST low->high
+  # edge so it latches address 0x5D.
+  on_boot:
+    - priority: 800
+      then:
+        - switch.turn_off: tp_int_drive   # INT low -> selects 0x5D
+        - switch.turn_off: tp_rst_drive   # RST low (assert reset)
+        - delay: 20ms
+        - switch.turn_on:  tp_rst_drive   # release RST (INT still low)
+        - delay: 10ms
+        - switch.turn_off: tp_int_drive   # leave INT low; addr latched
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    advanced:
+      execute_from_psram: true
+
+preferences:
+  flash_write_interval: 5min
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# -------------------------------------------
+# I2C bus (CH32V003 expander, GT911 touch, PCF8563 RTC)
+# -------------------------------------------
+i2c:
+  - id: bus_a
+    sda: 15
+    scl: 7
+    scan: true
+    frequency: 400kHz
+
+# -------------------------------------------
+# CH32V003 I/O expander
+# Pin map (bit = `number:`):
+#   0  EXIO0 - Battery charger status (input)
+#   1  EXIO1 - TP_RST  (output)
+#   2  EXIO2 - TP_INT  (touch interrupt - input)
+#   3  EXIO3 - LCD_RST (output)
+#   4  EXIO4 - SD_CS   (output)
+#   5  EXIO5 - SYS_EN  (output, must be HIGH)
+#   6  EXIO6 - BEE_EN  (buzzer - output)
+#   7  EXIO7 - RTC_INT (input)
+# -------------------------------------------
+external_components:
+  - source: github://pr#10071
+    components: [waveshare_io_ch32v003]
+    refresh: 1h
+
+waveshare_io_ch32v003:
+  - id: wave_io
+    address: 0x24
+    i2c_id: bus_a
+
+# -------------------------------------------
+# System enable (EXIO5) - must be HIGH for board to operate
+# -------------------------------------------
+switch:
+  - platform: gpio
+    id: sys_enable
+    internal: true
+    restore_mode: ALWAYS_ON
+    pin:
+      waveshare_io_ch32v003: wave_io
+      number: 5
+      mode:
+        output: true
+
+  - platform: gpio
+    id: buzzer
+    name: "Buzzer"
+    icon: mdi:bullhorn
+    restore_mode: ALWAYS_OFF
+    pin:
+      waveshare_io_ch32v003: wave_io
+      number: 6  # EXIO6 - BEE_EN
+      mode:
+        output: true
+
+  # Touch reset / interrupt lines exposed as internal switches so the
+  # esphome.on_boot sequence above can drive them. INT is normally an
+  # input to the MCU, but the GT911 only samples it during reset to
+  # latch its I2C address - we drive it as an output for those few
+  # milliseconds and then leave it low.
+  - platform: gpio
+    id: tp_rst_drive
+    internal: true
+    restore_mode: ALWAYS_ON   # released (HIGH) by default
+    pin:
+      waveshare_io_ch32v003: wave_io
+      number: 1   # EXIO1 - TP_RST
+      mode:
+        output: true
+
+  - platform: gpio
+    id: tp_int_drive
+    internal: true
+    restore_mode: ALWAYS_OFF  # low during reset window, then left low
+    pin:
+      waveshare_io_ch32v003: wave_io
+      number: 2   # EXIO2 - TP_INT
+      mode:
+        output: true
+
+button:
+  # Momentary buzzer test - confirms EXIO6 is wired to an active buzzer.
+  # If you hear nothing here, the buzzer is passive and EXIO6 alone
+  # cannot drive it (CH32V003 PWM register 0x05 is used by the backlight).
+  - platform: template
+    name: "Test Buzzer (200ms)"
+    on_press:
+      - switch.turn_on: buzzer
+      - delay: 200ms
+      - switch.turn_off: buzzer
+
+# -------------------------------------------
+# Backlight - hardware PWM via CH32V003 (register 0x05)
+# Higher duty = dimmer (FB pulled low). `inverted: true` makes
+# the light entity behave normally (100% = brightest).
+# -------------------------------------------
+output:
+  - platform: waveshare_io_ch32v003
+    id: pwm_backlight_output
+    inverted: true
+    zero_means_zero: true
+    safe_pwm_levels:
+      min_value: 1
+      max_value: 247
+
+light:
+  - platform: monochromatic
+    output: pwm_backlight_output
+    name: "Display Backlight"
+    icon: mdi:lightbulb-on
+    id: display_backlight
+    restore_mode: RESTORE_DEFAULT_ON
+    default_transition_length: 750ms
+    gamma_correct: 1.8
+
+# -------------------------------------------
+# Touchscreen GT911
+#
+# TP_RST (EXIO1) and TP_INT (EXIO2) live behind the CH32V003 expander,
+# so every pin toggle is a full I2C transaction. The GT911's own
+# reset/address-select sequence requires sub-millisecond timing on
+# RST + INT, which the expander cannot reliably hit on a shared bus -
+# that produced intermittent "Calibration error" / FAILED touchscreen
+# at boot.
+#
+# Instead we pre-reset the chip in esphome.on_boot (priority 800,
+# above) using tp_rst_drive / tp_int_drive switches. The GT911 is
+# already alive at address 0x5D by the time this component sets up,
+# so we omit reset_pin / interrupt_pin and just talk to it on I2C.
+# -------------------------------------------
+touchscreen:
+  platform: gt911
+  i2c_id: bus_a
+  id: my_touchscreen
+  display: my_display
+
+# ---------------------------------------------------------
+# Display - ST7701S RGB panel (pinout unchanged from Rev 3)
+# ---------------------------------------------------------
+spi:
+  - id: lcd_spi
+    clk_pin: GPIO2
+    mosi_pin: GPIO1
+
+display:
+  - platform: mipi_rgb
+    setup_priority: 750
+    model: WAVESHARE-4-480X480
+    id: lcd_display
+    reset_pin:
+      waveshare_io_ch32v003: wave_io
+      number: 3 # EXIO3 - LCD_RST
+    pixel_mode: 18bit
+
+# Special LVGL settings required for this display
+# Rev 4 panel is physically rotated 180° vs Rev 3 - default to 180
+lvgl:
+  rotation: ${rotation | default("180")}

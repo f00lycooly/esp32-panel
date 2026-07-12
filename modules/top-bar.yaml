@@ -1,0 +1,161 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# top-bar.yaml — the standard top bar.
+# Included as a package by waveshare-p4-86-panel.yaml. Builds on nav2d
+# + takeover.
+#
+# ONE bar drawn on top_layer over EVERY function page (global rule: standard top
+# bar everywhere). Three slots, identical on all pages:
+#   LEFT   battery status_pill → Energy (colour + MDI glyph by SOC + power flow)
+#   CENTRE clock + date (Oswald; date muted)
+#   RIGHT  settings cog → Settings takeover; its border IS the HA-connection ring
+#          (green = an HA API client connected, red = not — )
+#
+# A singleton (not per-page) because the bar is byte-identical everywhere; one
+# `topbar_refresh` (2s) paints the one set of ids — it also keeps the screensaver
+# battery pill (page-screensaver) in sync, so there is a single battery painter.
+#
+# Visibility is owned by nav_chrome (nav2d.yaml): shown on function pages, hidden
+# by takeover_enter (takeovers draw their own back-chevron header) and on the
+# screensaver. Pages keep their content below y=72 ($shell_content_y), so the bar
+# floats over the reserved strip.
+#
+# Reuses widgets/status_pill.yaml + widgets/icon_button.yaml.
+# Cross-package ids: batt_soc/batt_kw (ui-shared), pv_kw/home_kw
+# (page-energy), ha_connected (library loading.yaml), ha_time (ui-foundation),
+# energy_page/info_screen, takeover_enter (takeover.yaml), btn_ss_batt/ic_ss_batt/
+# lbl_ss_batt (page-screensaver).
+# ─────────────────────────────────────────────────────────────────────────────
+
+interval:
+  - interval: 2s
+    then:
+      - script.execute: topbar_refresh
+
+script:
+  - id: topbar_refresh
+    then:
+      - lambda: |-
+          // Everything this script paints lives on the top bar or the
+          // screensaver battery pill. Skip the strftime + ~20 LVGL writes when
+          // neither is visible (bar hidden by a takeover, screensaver not the
+          // active screen).
+          bool bar_vis = !lv_obj_has_flag(id(topbar), LV_OBJ_FLAG_HIDDEN);
+          bool ss_vis  = lv_obj_get_screen(id(btn_ss_batt)) == lv_screen_active();
+          if (!bar_vis && !ss_vis) return;
+
+          // ── Clock + date ──
+          auto t = id(ha_time).now();
+          if (t.is_valid()) {
+            char buf[6];
+            snprintf(buf, sizeof(buf), "%02d:%02d", t.hour, t.minute);
+            lv_label_set_text(id(lbl_topbar_clock), buf);
+            char db[20];
+            t.strftime(db, sizeof(db), "%a %e %b");      // Day · date (year dropped for space)
+            lv_label_set_text(id(lbl_topbar_date), db);
+          }
+
+          // ── HA connection-status ring around the settings cog ──
+          lv_obj_set_style_border_color(id(topbar_cog),
+            id(ha_connected) ? lv_color_hex(0x7ACF38) : lv_color_hex(0xE5484D), 0);
+
+          // ── Battery: SOC% + power-flow state (glyph + colour) ──
+          // State from instantaneous powers (batt_kw +chg/-dis, pv_kw solar,
+          // home_kw load); grid = residual home + batt - pv (+import/-export).
+          // Dead-band keeps it from flickering near 0.
+          {
+            char soc[8] = "--%";
+            if (id(batt_soc).has_state())
+              snprintf(soc, sizeof(soc), "%d%%", (int)lroundf(id(batt_soc).state));
+            lv_label_set_text(id(lbl_topbar_batt), soc);
+            lv_label_set_text(id(lbl_ss_batt),     soc);
+
+            float kw   = id(batt_kw).has_state() ? id(batt_kw).state : 0.0f;   // + charge / - discharge
+            float pv   = id(pv_kw).has_state()   ? id(pv_kw).state   : 0.0f;   // solar  (>= 0)
+            float load = id(home_kw).has_state() ? id(home_kw).state : 0.0f;   // house  (>= 0)
+            float grid = load + kw - pv;                                       // + import / - export
+            const float T = 0.10f;                                            // dead-band (kW)
+
+            const char* gl; uint32_t col;
+            if (kw > T) {                       // charging
+              if (grid > T) { gl = "$mdi_transmission_tower_import"; col = 0x2F9FFF; }  // from grid
+              else          { gl = "$mdi_solar_power";               col = 0xF2C200; }  // from solar
+            } else if (kw < -T) {               // discharging → house
+              gl = "$mdi_home_lightning_bolt"; col = 0xFF8C2E;
+            } else if (grid < -T && pv > T) {   // battery idle, solar surplus → grid
+              gl = "$mdi_transmission_tower_export"; col = 0x34D058;
+            } else {                            // idle
+              gl = "$mdi_battery_high"; col = 0x7C828C;
+            }
+
+            lv_color_t c = lv_color_hex(col);
+            // Standard top-bar pill
+            lv_label_set_text(id(ic_topbar_batt), gl);
+            lv_obj_set_style_text_color(id(ic_topbar_batt),  c, 0);
+            lv_obj_set_style_text_color(id(lbl_topbar_batt), c, 0);
+            lv_obj_set_style_border_color(id(topbar_batt), c, 0);
+            lv_obj_set_style_bg_color(id(topbar_batt), c, 0);
+            lv_obj_set_style_bg_opa(id(topbar_batt), 38, 0);
+            // Screensaver pill (top-right) — same state, larger glyphs/text
+            lv_label_set_text(id(ic_ss_batt), gl);
+            lv_obj_set_style_text_color(id(ic_ss_batt),  c, 0);
+            lv_obj_set_style_text_color(id(lbl_ss_batt), c, 0);
+            lv_obj_set_style_border_color(id(btn_ss_batt), c, 0);
+            lv_obj_set_style_bg_color(id(btn_ss_batt), c, 0);
+            lv_obj_set_style_bg_opa(id(btn_ss_batt), 38, 0);
+          }
+
+lvgl:
+  top_layer:
+    widgets:
+      # The standard bar: a transparent full-width 72px strip at the top holding
+      # the three slots. `topbar` is the show/hide handle (driven by nav_chrome).
+      - obj:
+          id: topbar
+          align: TOP_MID
+          y: 0
+          width: 100%
+          height: 72
+          bg_opa: TRANSP
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: false
+          widgets:
+            # LEFT — battery pill → Energy
+            - button:
+                <<: !include
+                  file: widgets/status_pill.yaml
+                  vars: {uid: topbar_batt, width: 150, height: 60, gap: 9,
+                         glyph: $mdi_battery_charging, glyph_font: mdi_card_28, fg: ep_green,
+                         value_text: "--%", value_font: oswald_24, value_color: white,
+                         bg: gray900, border_width: 1, border_color: ep_green}
+                align: LEFT_MID
+                x: 16
+                on_click:
+                  - lvgl.page.show: energy_page
+            # CENTRE — clock + date (passes taps through)
+            - obj:
+                align: CENTER
+                width: 480
+                height: 64
+                bg_opa: TRANSP
+                border_width: 0
+                pad_all: 0
+                scrollable: false
+                clickable: false
+                layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 20}
+                widgets:
+                  - label: {id: lbl_topbar_clock, clickable: false, text: "--:--", text_font: oswald_42, text_color: white}
+                  - label: {id: lbl_topbar_date,  clickable: false, text: "",      text_font: oswald_42, text_color: gray400}
+            # RIGHT — settings cog → Settings takeover; border = HA-connection ring
+            - button:
+                <<: !include
+                  file: widgets/icon_button.yaml
+                  vars: {uid: topbar_cog, size: 60, glyph: $mdi_cog, glyph_font: mdi_card_28, bg: gray900, fg: gray400}
+                align: RIGHT_MID
+                x: -16
+                border_width: 3            # override icon_button's 0 → HA-ring border
+                border_color: gray700
+                on_click:
+                  - script.execute: takeover_enter
+                  - lvgl.page.show: info_screen

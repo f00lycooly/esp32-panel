@@ -1,0 +1,26 @@
+# Capture registration for page-main. Literal — no vars
+# (shared-var includes leak globally and collide). Concatenates into the merged
+# lvgl_screenshot.pages list. Selected only when capture_mode == "on".
+#
+# modals: button-launched overlays captured via
+# ?modal=<name>. rooms/sources live in page-media's top_layer (always included as
+# the media backend); np_overlay is an in-page overlay on main_page.
+lvgl_screenshot:
+  pages:
+    - {name: main,      page: main_page}
+    - {name: multiroom, page: multiroom_page}
+  modals:
+    # Sonos grouping editor. before: pre-stage live selection from topology, then
+    # paint the selection highlight (both pure lambdas — no HA writes).
+    - name: rooms
+      page: main_page
+      show: [popup_scrim, rooms_modal]
+      before: [prestage_from_topology, refresh_device_sel]
+    # Now-playing transport/volume overlay (in-page, full-screen, dimmed).
+    - name: nowplaying
+      page: main_page
+      show: [np_overlay]
+    # Playlists/Sources grid (defined-but-unwired shell — shown directly).
+    - name: sources
+      page: main_page
+      show: [popup_scrim, sources_modal]

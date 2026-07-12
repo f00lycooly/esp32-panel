@@ -1,0 +1,47 @@
+# ───────────────────────────────────────────────────────────────────────────
+# chip.yaml — small rounded pill label
+#
+# A compact, fully-rounded chip: optional leading MDI glyph + a short label,
+# auto-sized to its content. Used for filter/category/selection chips across the
+# rebuild (browse categories, alarm sub-pickers, etc.).
+#
+# Emits a PROPERTY-MAP (no wrapper). Merge under `obj:` for a static chip or
+# `button:` for a tappable one (add on_click at the call site):
+#
+#   - button:
+#       <<: !include {file: widgets/chip.yaml, vars: {uid: cat_rock, text: "Rock",
+#              glyph: $mdi_music, fg: white, bg: very_dark_gray}}
+#       on_click: [{script.execute: pick_rock}]
+#
+# Selection state is colour-driven (owned by the page): recolour `${uid}` (bg) +
+# `lbl_${uid}` / `ic_${uid}` (fg) from a refresh lambda. The glyph label is
+# omitted by passing glyph: "" — pass a real $mdi_* to show it.
+#
+# vars: uid, text, glyph (or ""), fg, bg, font (default oswald_18),
+#       glyph_font (default mdi_card_28)
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+height: 44
+width: SIZE_CONTENT
+radius: 9999
+bg_color: ${bg}
+border_width: 0
+pad_top: 0
+pad_bottom: 0
+pad_left: 18
+pad_right: 18
+scrollable: false
+widgets:
+  - obj:
+      align: CENTER
+      width: SIZE_CONTENT
+      height: SIZE_CONTENT
+      bg_opa: TRANSP
+      border_width: 0
+      pad_all: 0
+      scrollable: false
+      clickable: false
+      layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 8}
+      widgets:
+        - label: {id: ic_$uid,  clickable: false, text: $glyph,  text_font: $glyph_font, text_color: $fg}
+        - label: {id: lbl_$uid, clickable: false, text: "$text", text_font: $font,       text_color: $fg}

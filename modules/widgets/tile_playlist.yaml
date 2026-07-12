@@ -1,0 +1,53 @@
+# ───────────────────────────────────────────────────────────────────────────
+# tile_playlist.yaml — Playlists-modal Spotify favourite tile (page-media only).
+#
+# One cell of the 4×2 Playlists grid. Each tile is a
+# distinct VER linear-gradient (no remote cover art — per-tile thumbnails are
+# impractical on the P4; gradients give visual variety and build fully on-device,
+# see bd .17 design note 2026-06-14). A fixed decorative glyph (top-left) and the
+# playlist name (bottom-left, populated at runtime by the names_8 text_sensor)
+# label the tile. Tap plays playlist `idx` onto the active coordinator via the
+# play_playlist script.
+#
+# Children are label-only + clickable:false so the tile is immune to the LVGL v9
+# obj-clickable trap — see bd memory `lvgl-v9-obj-clickable-default`.
+#
+# The tile_id MUST match the ids the names_8 handler drives:
+#   ${tile_id} (button, shown/hidden by availability), ${tile_id}_name (caption).
+#
+# vars: tile_id, idx, col, row, glyph, grad_top, grad_bottom
+# ───────────────────────────────────────────────────────────────────────────
+button:
+  id: ${tile_id}
+  grid_cell_column_pos: ${col}
+  grid_cell_row_pos: ${row}
+  grid_cell_x_align: STRETCH
+  grid_cell_y_align: STRETCH
+  bg_color: ${grad_top}
+  bg_grad_color: ${grad_bottom}
+  bg_grad_dir: VER
+  bg_opa: cover
+  radius: 16
+  border_width: 0
+  pad_all: 11
+  scrollable: false
+  widgets:
+    - label:
+        clickable: false
+        align: TOP_LEFT
+        text: ${glyph}
+        text_font: mdi_card_28
+        text_color: white
+    - label:
+        id: ${tile_id}_name
+        clickable: false
+        align: BOTTOM_LEFT
+        width: 127
+        long_mode: DOT
+        text: ""
+        text_font: nunito_18
+        text_color: white
+  on_click:
+    - script.execute:
+        id: play_playlist
+        idx: ${idx}

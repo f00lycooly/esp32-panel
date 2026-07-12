@@ -1,0 +1,30 @@
+# ───────────────────────────────────────────────────────────────────────────
+# stat_cell_inline.yaml — icon + value on ONE row
+#
+# The inline sibling of stat_cell.yaml: glyph and value side by side, no caption.
+# Use where vertical room is tight or the metric reads fine without a label
+# (e.g. the main page's bottom climate strip: thermometer 22° · droplet 66%).
+#
+#   - !include
+#       file: widgets/stat_cell_inline.yaml
+#       vars: {value_id: lbl_home_clim_temp, glyph: $mdi_thermometer,
+#              glyph_font: mdi_home_28, glyph_color: ep_orange,
+#              value_font: oswald_36, value_text: "--°", value_color: white, gap: 10}
+#
+# vars: glyph, glyph_font, glyph_color, value_id, value_font, value_text,
+#       value_color, gap
+# ───────────────────────────────────────────────────────────────────────────
+obj:
+  align: CENTER
+  width: SIZE_CONTENT
+  height: SIZE_CONTENT
+  bg_opa: TRANSP
+  border_width: 0
+  pad_all: 0
+  scrollable: false
+  clickable: false
+  # NB: $var (not ${var}) inside flow mappings — see stat_cell.yaml.
+  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: $gap}
+  widgets:
+    - label: {clickable: false, text: $glyph, text_font: $glyph_font, text_color: $glyph_color}
+    - label: {id: $value_id, clickable: false, text: "$value_text", text_font: $value_font, text_color: $value_color}

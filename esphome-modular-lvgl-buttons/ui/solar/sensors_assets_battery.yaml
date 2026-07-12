@@ -1,0 +1,137 @@
+# You need at add energy_info.yaml to your configuration.yaml
+---
+sensor:
+  - platform: homeassistant
+    id: current_battery_soc
+    entity_id: sensor.envoy_${envoy_id}_battery
+    name: "Battery SOC"
+    entity_category: diagnostic
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: battery_soc_percentage
+            text:
+              format: "%.0f%%"
+              args: ['id(current_battery_soc).state']
+        # Update battery image based on percentage
+        - if:
+            condition:
+              lambda: 'return id(current_battery_soc).state >= 80;'
+            then:
+              - lvgl.image.update:
+                  id: battery_soc_image
+                  src: battery_100_45
+        - if:
+            condition:
+              lambda: 'return id(current_battery_soc).state >= 60 && id(current_battery_soc).state < 80;'
+            then:
+              - lvgl.image.update:
+                  id: battery_soc_image
+                  src: battery_80_45
+        - if:
+            condition:
+              lambda: 'return id(current_battery_soc).state >= 40 && id(current_battery_soc).state < 60;'
+            then:
+              - lvgl.image.update:
+                  id: battery_soc_image
+                  src: battery_60_45
+        - if:
+            condition:
+              lambda: 'return id(current_battery_soc).state >= 15 && id(current_battery_soc).state < 40;'
+            then:
+              - lvgl.image.update:
+                  id: battery_soc_image
+                  src: battery_30_45
+        - if:
+            condition:
+              lambda: 'return id(current_battery_soc).state < 15;'
+            then:
+              - lvgl.image.update:
+                  id: battery_soc_image
+                  src: battery_10_45
+
+  - platform: homeassistant
+    id: daily_battery_energy_charged
+    entity_id: sensor.daily_battery_energy_charged
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_battery_energy_charged_watts
+            text:
+              format: "%.1f"
+              args: ['id(daily_battery_energy_charged).state']
+
+  - platform: homeassistant
+    id: daily_battery_energy_discharged
+    entity_id: sensor.daily_battery_energy_discharged
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_battery_energy_discharged_watts
+            text:
+              format: "%.1f"
+              args: ['id(daily_battery_energy_discharged).state']
+
+binary_sensor:
+  - platform: homeassistant
+    id: current_grid_status
+    entity_id: binary_sensor.enpower_${enpower_id}_grid_status
+    internal: true
+    trigger_on_initial_state: true
+    on_state:
+      then:
+        - if:
+            condition:
+              binary_sensor.is_on: current_grid_status
+            then:
+              - lvgl.label.update:
+                  id: grid_status_label
+                  text: "Grid up"
+              - lvgl.image.update:
+                  id: grid_status_icon
+                  src: grid_ok_45
+            else:
+              - lvgl.label.update:
+                  id: grid_status_label
+                  text: "Grid down"
+              - lvgl.image.update:
+                  id: grid_status_icon
+                  src: grid_down_45
+
+# Battery icons - included automatically
+image:
+  rgb565:
+    alpha_channel:
+      - file: esphome-modular-lvgl-buttons/assets/images/battery/battery.svg
+        id: battery_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/solar/grid_ok.svg
+        id: grid_ok_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/solar/grid_down.svg
+        id: grid_down_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/battery/battery_100.svg
+        id: battery_100_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/battery/battery_80.svg
+        id: battery_80_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/battery/battery_60.svg
+        id: battery_60_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/battery/battery_30.svg
+        id: battery_30_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/battery/battery_10.svg
+        id: battery_10_45
+        resize: 45x45

@@ -1,0 +1,228 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKLIGHT TIME CONTROL
+# ═══════════════════════════════════════════════════════════════════════════════
+# Controls display brightness based on sun position and time of day.
+#
+# Optional substitutions (defaults provided below):
+#   display_daytime_brightness: "100%"
+#   display_nighttime_brightness: "50%"
+#   display_night_hour: "0"      # Hour for night mode (0-23)
+#   display_night_minute: "0"    # Minute for night mode (0-59)
+#   display_backlight_timeout_always_enabled: "false"  # Set true to dim/off in all modes, not just Night
+#   display_backlight_timeout_initial: "10"  # Initial backlight timeout in minutes (-1 to disable)
+#
+# Backlight idle timeout is controlled at runtime via the 'display_backlight_timeout' number entity (minutes).
+#
+# Modes:
+#   Day     - After sunrise, full brightness
+#   Evening - After sunset, reduced brightness
+#   Night   - After night hour, screen off when idle
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Default values for backlight control - can be overridden in main YAML file
+substitutions:
+  display_daytime_brightness: "100%"
+  display_nighttime_brightness: "50%"
+  display_night_hour: "0"
+  display_night_minute: "0"
+  display_backlight_timeout_always_enabled: "false"
+  display_backlight_timeout_initial: ".12"
+
+globals:
+  - id: boot_restart_published
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+sun:
+  latitude: !secret latitude
+  longitude: !secret longitude
+  on_sunset:
+    - elevation: -3.5°
+      then:
+        - select.set:
+            id: brightness_mode
+            option: "Evening"
+  on_sunrise:
+    - then:
+        - select.set:
+            id: brightness_mode
+            option: "Day"
+
+number:
+  - platform: template
+    id: display_backlight_timeout
+    name: Backlight timeout
+    icon: "mdi:timer-outline"
+    optimistic: true
+    unit_of_measurement: "min"
+    initial_value: ${display_backlight_timeout_initial}
+    restore_value: true
+    min_value: -1
+    max_value: 720
+    step: 1
+    mode: box
+
+light:
+  - id: !extend display_backlight
+    on_turn_on:
+      - lvgl.resume:
+
+  # You can set the display_backlight to on via HomeAssistant to turn on the display
+  # Please note, that the display will again turn off, after display_backlight_timeout has expired.
+  # To keep the display awake, you need to set display_backlight_timeout to -1, then
+  # reset the display_backlight_timeout when the turn on event is cleared (e.g. motion sensor does
+  # not detect motion)
+
+time:
+  - platform: homeassistant
+    id: system_time
+    on_time_sync:
+      - script.execute: time_update
+
+      # Update last restart time (only once, on first sync after boot)
+      - if:
+          condition:
+            lambda: 'return id(boot_restart_published) == false;'
+          then:
+            - lambda: 'id(boot_restart_published) = true;'
+            - text_sensor.template.publish:
+                id: device_last_restart
+                state: !lambda 'return id(system_time).now().strftime("%a %d %b %Y - %I:%M:%S %p");'
+            - logger.log:
+                level: INFO
+                format: "Setting brightness mode on boot"
+            - script.execute: set_brightness_mode_on_boot
+
+    on_time:
+      # Trigger night mode at configured time
+      - seconds: 0
+        minutes: ${display_night_minute}
+        hours: ${display_night_hour}
+        then:
+          - select.set:
+              id: brightness_mode
+              option: "Night"
+      # Update time display every minute
+      - seconds: 0
+        minutes: '*'
+        then:
+          - script.execute: time_update
+
+lvgl:
+  on_idle:
+    timeout: !lambda return (uint32_t)(id(display_backlight_timeout).state * 60000);
+    then:
+      - logger.log:
+          level: INFO
+          format: "LVGL is idle"
+      - if:
+          condition:
+            lambda: 'return id(brightness_mode).current_option() == "Night" || ${display_backlight_timeout_always_enabled};'
+          then:
+            - light.turn_off: display_backlight
+            - lvgl.pause:
+                show_snow: true
+  on_resume:
+    then:
+      - logger.log:
+          level: INFO
+          format: "LVGL resumed - restoring backlight"
+      - script.execute: apply_brightness_mode
+
+select:
+  - platform: template
+    name: "Brightness mode"
+    id: brightness_mode
+    icon: mdi:television-shimmer
+    optimistic: true
+    options:
+      - Day
+      - Evening
+      - Night
+    initial_option: Day
+    on_value:
+      then:
+        - lvgl.resume
+        - lvgl.widget.redraw
+        - script.execute: apply_brightness_mode
+
+script:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Apply brightness based on current mode
+  # ─────────────────────────────────────────────────────────────────────────────
+  - id: apply_brightness_mode
+    then:
+      - if:
+          condition:
+            lambda: 'return id(brightness_mode).current_option() == "Day";'
+          then:
+            - light.turn_on:
+                id: display_backlight
+                brightness: ${display_daytime_brightness}
+      - if:
+          condition:
+            lambda: 'return id(brightness_mode).current_option() == "Evening";'
+          then:
+            - light.turn_on:
+                id: display_backlight
+                brightness: ${display_nighttime_brightness}
+      - if:
+          condition:
+            lambda: 'return id(brightness_mode).current_option() == "Night";'
+          then:
+            - light.turn_on:
+                id: display_backlight
+                brightness: ${display_nighttime_brightness}
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Set brightness mode on boot based on sun position and time
+  # Logic:
+  #   - Sun above horizon → Day
+  #   - Sun below horizon + time >= night_hour → Night
+  #   - Sun below horizon + time < night_hour → Evening
+  # Note: Early morning (before sunrise) sun is down, but we've already passed
+  #       night_hour from the previous day, so it remains Night until sunrise.
+  # ─────────────────────────────────────────────────────────────────────────────
+  - id: set_brightness_mode_on_boot
+    then:
+      - if:
+          condition:
+            sun.is_above_horizon:
+          then:
+            - logger.log:
+                level: INFO
+                format: "Boot: Sun is up - Day mode"
+            - select.set:
+                id: brightness_mode
+                option: "Day"
+          else:
+            # Sun is down - determine Evening vs Night based on time
+            - if:
+                condition:
+                  lambda: |-
+                    auto now = id(system_time).now();
+                    int current = now.hour * 60 + now.minute;
+                    int night = ${display_night_hour} * 60 + ${display_night_minute};
+                    // Special case: if night_hour is midnight (0), use AM/PM as divider
+                    // Evening = PM hours (12-23), Night = AM hours (0-11)
+                    if (night == 0) {
+                      return now.hour < 12;
+                    }
+                    // Otherwise: Night if past night_hour OR early morning (crossed midnight)
+                    return current >= night || now.hour < 12;
+                then:
+                  - logger.log:
+                      level: INFO
+                      format: "Boot: Night mode"
+                  - select.set:
+                      id: brightness_mode
+                      option: "Night"
+                else:
+                  - logger.log:
+                      level: INFO
+                      format: "Boot: Evening mode"
+                  - select.set:
+                      id: brightness_mode
+                      option: "Evening"

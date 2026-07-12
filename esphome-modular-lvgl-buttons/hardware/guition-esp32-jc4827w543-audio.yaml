@@ -1,0 +1,44 @@
+# guition-esp32-jc4827w543C 4.3-inch IPS 480*272 Smart Screen
+# https://github.com/profi-max/JC4827W543_4.3inch_ESP32S3_board/tree/main
+#
+# Hardware configuration file for built in speaker
+---
+
+# -------------------------------------------
+#  Audio output (Mono)
+# -------------------------------------------
+i2s_audio:
+  i2s_lrclk_pin:
+    number: 2
+  i2s_bclk_pin:
+    number: 42
+
+speaker:
+  - platform: i2s_audio
+    id: speaker_id
+    dac_type: external
+    i2s_dout_pin: GPIO41
+    sample_rate: 48000
+  - platform: mixer
+    id: mixer_speaker_id
+    output_speaker: speaker_id
+    source_speakers:
+      - id: announcement_spk_mixer_input
+      - id: media_spk_mixer_input
+  - platform: resampler
+    id: media_spk_resampling_input
+    output_speaker: media_spk_mixer_input
+  - platform: resampler
+    id: announcement_spk_resampling_input
+    output_speaker: announcement_spk_mixer_input
+
+media_player:
+  - platform: speaker
+    name: "Media Player"
+    id: speaker_media_player_id
+    media_pipeline:
+      speaker: media_spk_resampling_input
+      num_channels: 2
+    announcement_pipeline:
+      speaker: announcement_spk_resampling_input
+      num_channels: 1

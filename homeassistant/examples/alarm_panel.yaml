@@ -1,0 +1,93 @@
+# alarm_panel.yaml — HA package: alarm ringing/snooze helper contract for the
+# panel alarm page. Register in configuration.yaml:
+#   homeassistant:
+#     packages:
+#       panel_alarms: !include alarm_panel.yaml
+#
+# The panel reads the alarm list from sensor.scheduled_alarms (flat pipe-
+# delimited attributes a0..a5 + next) and edits via the esphome.panel_alarm_edit
+# event — the ALARM BACKEND (storing alarms, firing them, playing music, setting
+# these ringing helpers) is EXTERNAL: an automation engine of your choice
+# (Node-RED, AppDaemon, HA automations). This package provides the helper
+# contract the panel binds to; without a backend the alarm page renders an empty
+# list and Add/Edit fires events nobody consumes.
+#
+# Contract: the backend sets alarm_ringing/_name/_speaker when an alarm fires;
+# the panel ringing overlay reads them, and Dismiss/Snooze write them back
+# (snooze arms alarm_snooze_armed + alarm_snooze_until for the backend re-fire).
+#
+# IMPORTANT: alarm_ringing now holds the ALARM ID (a string id, NOT a "1".."4"
+# slot index) — hence max:32 (a short max would TRUNCATE the id). alarm_snooze_slot
+# likewise stashes the ringing alarm id for the snooze re-fire.
+
+input_text:
+  # --- Global ringing state (NR writes on fire; ringing overlay reads + clears) ---
+  alarm_ringing:
+    # id of the currently-ringing alarm (or empty)
+    name: Alarm Ringing
+    max: 32
+    initial: ""
+    icon: mdi:alarm-light
+  alarm_ringing_name:
+    name: Alarm Ringing Name
+    max: 40
+    initial: ""
+    icon: mdi:alarm-light
+  alarm_ringing_speaker:
+    # target speaker entity of the ringing alarm (panel shows ownership)
+    name: Alarm Ringing Speaker
+    max: 80
+    initial: ""
+    icon: mdi:speaker
+  alarm_snooze_slot:
+    # internal: ringing alarm id stashed at snooze time so the re-fire
+    # knows which alarm to replay. Panel does not write this.
+    name: Alarm Snooze Slot
+    max: 32
+    initial: ""
+    icon: mdi:alarm-snooze
+
+input_datetime:
+  # Snooze re-arm time (paired with alarm_snooze_armed). Fixed past datetime so the
+  # snooze trigger always has a valid binding at boot.
+  alarm_snooze_until:
+    name: Alarm Snooze Until
+    has_date: true
+    has_time: true
+    initial: "2020-01-01 00:00:00"
+
+input_boolean:
+  # Snooze arm flag (paired with alarm_snooze_until); avoids re-fire when cleared.
+  alarm_snooze_armed:
+    name: Alarm Snooze Armed
+    icon: mdi:alarm-snooze
+
+# ── sensor.scheduled_alarms — the alarm-list feed the panel binds ────────────
+# Your alarm backend should publish this sensor with attributes a0..a5 (one
+# pipe-delimited row per alarm, empty string for unused rows) and `next` (the
+# next-fire summary). Row format the panel parses:
+#   id|time|label|daysDigits|en|speaker|music|person|vol
+#     id         = backend alarm id (string)
+#     time       = HH:MM
+#     daysDigits = concatenated day indices Mon=0..Sun=6 (e.g. "01234"); "" = one-shot
+#     en         = 1/0
+#     speaker    = media_player entity id
+#     music      = playlist URI ("" = default sound)
+#     person     = person.* the alarm belongs to ("" = anyone)
+#     vol        = 0..100
+# This stub renders an EMPTY list so the page is functional (and shows "No
+# alarms") before a backend exists — replace it with your backend's sensor.
+template:
+  - sensor:
+      - name: Scheduled Alarms
+        unique_id: scheduled_alarms
+        icon: mdi:alarm-multiple
+        state: "0"
+        attributes:
+          a0: ""
+          a1: ""
+          a2: ""
+          a3: ""
+          a4: ""
+          a5: ""
+          next: ""

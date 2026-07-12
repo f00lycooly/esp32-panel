@@ -1,0 +1,33 @@
+# ───────────────────────────────────────────────────────────────────────────
+# tumbler.yaml — lv_roller value tumbler
+#
+# An LVGL roller (spinning column) for picking a value from a list — the Set
+# Timer HH/MM/SS columns and the alarm time picker. LVGL-honest: a real
+# `roller`, no custom scroll.
+#
+# The include carries the STYLING + id only — `options:` is page-specific, so the
+# CALLER adds it as a sibling key under the same `roller:` (the include omits it),
+# and reads the choice via `lv_roller_get_selected(id(${uid}))`:
+#
+#   - roller:
+#       <<: !include {file: widgets/tumbler.yaml, vars: {uid: tmr_min,
+#              visible_rows: 3, font: oswald_48, width: 130}}
+#       options: ["00","01","02", ...]      # caller-provided
+#
+# ids: ${uid} (the roller). vars: uid, width, visible_rows (default 3),
+#      font (default oswald_48), fg (default white), sel_bg (default ep_blue).
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+width: ${width}
+visible_row_count: ${visible_rows}
+anim_time: 180ms
+text_font: ${font}
+text_color: ${fg}
+bg_opa: TRANSP
+border_width: 0
+# Highlighted (centre) row — the current selection band.
+selected:
+  bg_color: ${sel_bg}
+  bg_opa: cover
+  text_color: white
+  radius: 12

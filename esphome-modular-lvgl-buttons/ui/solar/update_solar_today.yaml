@@ -1,0 +1,172 @@
+---
+substitutions:
+  # Set in your top-level YAML to enable a SECOND Envoy / IQ Gateway.
+  # Use the same suffix format as ${envoy_id} (the part that fills
+  # `sensor.envoy_<suffix>_...`). Leave empty (default) for single-Envoy
+  # installs -- no other changes required. When set, the four "today"
+  # totals below are summed across both Envoys. Whitespace-only values
+  # are treated as empty.
+  envoy_id_2: ""
+
+  # Home Assistant sensor entity IDs
+  ha_sensor_net_consumption: 'sensor.envoy_${envoy_id}_lifetime_net_energy_consumption'
+  ha_sensor_production: 'sensor.envoy_${envoy_id}_lifetime_energy_production'
+  ha_sensor_net_production: 'sensor.envoy_${envoy_id}_lifetime_net_energy_production'
+  ha_sensor_net_consumption_2: 'sensor.envoy_${envoy_id_2}_lifetime_net_energy_consumption'
+  ha_sensor_production_2: 'sensor.envoy_${envoy_id_2}_lifetime_energy_production'
+  ha_sensor_net_production_2: 'sensor.envoy_${envoy_id_2}_lifetime_net_energy_production'
+
+# Extend on_ha_connected script (called from loading.yaml when HA connects)
+script:
+  - id: !extend on_ha_connected
+    then:
+      - script.execute: fetch_solar_today
+
+  - id: fetch_solar_today
+    then:
+      - logger.log:
+          level: INFO
+          format: "Requesting solar data from Home Assistant..."
+      - homeassistant.action:
+          action: recorder.get_statistics
+          data_template:
+            statistic_ids: >-
+              {% set ids = [
+                '$ha_sensor_net_consumption',
+                '$ha_sensor_production',
+                '$ha_sensor_net_production'
+              ] %}
+              {% set envoy_2 = '${envoy_id_2}' | trim %}
+              {% if envoy_2 | length > 0 %}
+                {% set ids = ids + [
+                  '$ha_sensor_net_consumption_2',
+                  '$ha_sensor_production_2',
+                  '$ha_sensor_net_production_2'
+                ] %}
+              {% endif %}
+              {{ ids }}
+            start_time: >-
+              {{ today_at('00:00:00').isoformat() }}
+            period: day
+            types: >-
+              {{ ['change'] }}
+          capture_response: true
+          response_template: >-
+            {% set stats = response.statistics %}
+            {% macro get_kwh(sensor_id) %}
+              {% set data = stats.get(sensor_id, []) %}
+              {% set raw_value = data | sum(attribute='change') %}
+              {% set unit = state_attr(sensor_id, 'unit_of_measurement') | default('kWh') %}
+              {% if unit == 'MWh' %}
+                {{ (raw_value * 1000) | round(2) }}
+              {% elif unit == 'Wh' %}
+                {{ (raw_value / 1000) | round(2) }}
+              {% else %}
+                {{ raw_value | round(2) }}
+              {% endif %}
+            {% endmacro %}
+            {% set net_consumption = get_kwh('$ha_sensor_net_consumption') | float %}
+            {% set production = get_kwh('$ha_sensor_production') | float %}
+            {% set net_production = get_kwh('$ha_sensor_net_production') | float %}
+            {% set envoy_2 = '${envoy_id_2}' | trim %}
+            {% if envoy_2 | length > 0 %}
+              {% set net_consumption = net_consumption + (get_kwh('$ha_sensor_net_consumption_2') | float) %}
+              {% set production = production + (get_kwh('$ha_sensor_production_2') | float) %}
+              {% set net_production = net_production + (get_kwh('$ha_sensor_net_production_2') | float) %}
+            {% endif %}
+            {% set consumption = net_consumption + production - net_production %}
+            {{ {'consumption': consumption | round(2), 'net_consumption': net_consumption, 'production': production, 'net_production': net_production} | tojson }}
+          on_success:
+            - lambda: |-
+                auto data = response["response"];
+                float consumption = data["consumption"].as<float>();
+                float net_consumption = data["net_consumption"].as<float>();
+                float production = data["production"].as<float>();
+                float net_production = data["net_production"].as<float>();
+
+                id(sensor_energy_consumption_today).publish_state(consumption);
+                id(sensor_net_energy_consumption_today).publish_state(net_consumption);
+                id(sensor_energy_production_today).publish_state(production);
+                id(sensor_net_energy_production_today).publish_state(net_production);
+
+                ESP_LOGI("energy", "Consumption: %.2f kWh", consumption);
+                ESP_LOGI("energy", "Net Consumption: %.2f kWh", net_consumption);
+                ESP_LOGI("energy", "Production: %.2f kWh", production);
+                ESP_LOGI("energy", "Net Production: %.2f kWh", net_production);
+
+          on_error:
+            - logger.log:
+                level: ERROR
+                format: "Error calling recorder.get_statistics!"
+
+# Run fetch_solar_today every minute
+interval:
+  - interval: 1min
+    then:
+      - if:
+          condition:
+            api.connected:
+          then:
+            - script.execute: fetch_solar_today
+
+sensor:
+  - platform: template
+    name: "Energy Consumption Today"
+    id: sensor_energy_consumption_today
+    internal: true
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_consumption_watts
+            text:
+              format: "%.1f"
+              args: ['id(sensor_energy_consumption_today).state']
+  - platform: template
+    name: "Net Energy Consumption Today"
+    id: sensor_net_energy_consumption_today
+    internal: true
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_imported_watts
+            text:
+              format: "%.1f"
+              args: ['id(sensor_net_energy_consumption_today).state']
+  - platform: template
+    name: "Energy Production Today"
+    id: sensor_energy_production_today
+    internal: true
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_production_watts
+            text:
+              format: "%.1f"
+              args: ['id(sensor_energy_production_today).state']
+  - platform: template
+    name: "Net Energy Production Today"
+    id: sensor_net_energy_production_today
+    internal: true
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_exported_watts
+            text:
+              format: "%.1f"
+              args: ['id(sensor_net_energy_production_today).state']

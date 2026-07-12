@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# page-doors-windows.yaml — SKELETON STUB for the contact open-overview page
+#. Hallway headline feature. Valid nav-wired LVGL page
+# now; the roster-driven contact tiles are the separate "card" work.
+#
+# CONTRACT (to be implemented): a roster-driven scrollable list/grid of contact
+# tiles, one per binary_sensor, device-class-aware glyph (door/window/motion);
+# RED + "OPEN" when the sensor is `on`, grey "closed" when `off`; a header
+# summary showing the open count (summed on-device — no HA helper). Roster is a
+# per-panel substitution list (dw_contact_<i>_entity / _caption / _kind), so the
+# contact set is composition-root config. Aggregates the home contacts per
+# per-panel roster; EXCLUDES vehicles/EV trackers.
+#
+# Needs MDI glyphs added to the consuming font glyphs: list:
+#   $mdi_door, $mdi_window_closed_variant (+ open), $mdi_motion_sensor.
+# ─────────────────────────────────────────────────────────────────────────────
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_doors_windows: !include capture/${capture_mode}/doors-windows.yaml
+
+substitutions:
+  dw_nav_f: "2"          # Hallway: Security function (F2)
+  dw_nav_p: "0"
+
+lvgl:
+  pages:
+    - id: doors_windows_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: $dw_nav_f, p: $dw_nav_p}
+      widgets:
+        - label:
+            align: TOP_MID
+            y: 88
+            text: "DOORS & WINDOWS"
+            text_font: oswald_24
+            text_color: 0xFFFFFF
+        - label:
+            align: CENTER
+            text: "skeleton — contact overview card TBD"
+            text_font: oswald_20
+            text_color: 0x9E9E9E

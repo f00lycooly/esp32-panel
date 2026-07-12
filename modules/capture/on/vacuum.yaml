@@ -1,0 +1,8 @@
+lvgl_screenshot:
+  pages:
+    - {name: vacuum, page: vacuum_page}
+  modals:
+    # "Choose a clean" picker (Full clean + routine rows). top_layer + scrim.
+    - name: vacclean
+      page: vacuum_page
+      show: [popup_scrim, vac_clean_modal]

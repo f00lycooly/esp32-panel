@@ -1,0 +1,4 @@
+lvgl_screenshot:
+  pages:
+    - {name: energy, page: energy_page}
+    - {name: today,  page: today_page}

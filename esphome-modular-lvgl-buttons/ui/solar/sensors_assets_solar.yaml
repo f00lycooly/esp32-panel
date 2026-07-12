@@ -1,0 +1,109 @@
+# You need at add energy_info.yaml to your Home Assistant configuration.yaml
+---
+sensor:
+  - platform: homeassistant
+    id: daily_energy_net_import
+    entity_id: sensor.daily_net_import
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_imported_watts
+            text:
+              format: "%.1f"
+              args: ['id(daily_energy_net_import).state']
+
+  - platform: homeassistant
+    id: daily_energy_net_export
+    entity_id: sensor.daily_net_export
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_exported_watts
+            text:
+              format: "%.1f"
+              args: ['id(daily_energy_net_export).state']
+
+  - platform: homeassistant
+    id: daily_energy_production
+    entity_id: sensor.daily_energy_production
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_production_watts
+            text:
+              format: "%.1f"
+              args: ['id(daily_energy_production).state']
+
+  - platform: homeassistant
+    id: daily_energy_consumption
+    entity_id: sensor.daily_energy_consumption
+    internal: true
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: daily_energy_consumption_watts
+            text:
+              format: "%.1f"
+              args: ['id(daily_energy_consumption).state']
+
+  - platform: combination
+    id: daily_energy_net_sum
+    type: linear
+    name: "Daily energy net sum"
+    internal: true
+    sources:
+      - source: daily_energy_net_import
+        coefficient: 1.0
+      - source: daily_energy_net_export
+        coefficient: -1.0
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: return (id(daily_energy_net_sum).state < 0);
+            then:
+              - lvgl.widget.update:
+                  id: daily_energy_net_watts
+                  text_color: ep_blue
+              - lvgl.image.update:
+                  id: daily_energy_net_watts_icon
+                  src: up_arrow_45
+            else:
+              - lvgl.widget.update:
+                  id: daily_energy_net_watts
+                  text_color: ep_orange
+              - lvgl.image.update:
+                  id: daily_energy_net_watts_icon
+                  src: down_arrow_45
+        - lvgl.label.update:
+            id: daily_energy_net_watts
+            text:
+              format: "%.1f"
+              args: ['fabs(id(daily_energy_net_sum).state)']  # Always display a positive number
+
+# Solar icons - included automatically
+image:
+  rgb565:
+    alpha_channel:
+      - file: esphome-modular-lvgl-buttons/assets/images/solar/house.svg
+        id: house_icon_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/solar/grid_icon.svg
+        id: grid_icon_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/solar/produced_icon.svg
+        id: produced_icon_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/solar/down_arrow.svg
+        id: down_arrow_45
+        resize: 45x45
+
+      - file: esphome-modular-lvgl-buttons/assets/images/solar/up_arrow.svg
+        id: up_arrow_45
+        resize: 45x45

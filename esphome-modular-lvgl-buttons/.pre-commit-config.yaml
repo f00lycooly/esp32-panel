@@ -1,0 +1,59 @@
+# Pre-commit hooks for ESPHome user-config repository.
+#
+# Install with:
+#   pip install pre-commit yamllint esphome
+#   pre-commit install
+#
+# Run manually:
+#   pre-commit run --all-files
+#
+# The `esphome-config` hook validates every example file in example_code/
+# against the ESPHome schema; this is the authoritative check.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+        args: [--allow-multiple-documents, --unsafe]
+        # --unsafe needed because ESPHome uses custom YAML tags
+        # (!include, !lambda, !secret) that PyYAML can't construct.
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint]
+
+  - repo: local
+    hooks:
+      - id: esphome-config
+        name: esphome config (validate example_code)
+        # Symlink each changed example into the parent dir (so its
+        # `esphome-modular-lvgl-buttons/...` !includes resolve), validate,
+        # then clean up.
+        entry: |
+          bash -c '
+            set -e
+            repo="$(pwd)"
+            parent="$(dirname "$repo")"
+            for f in "$@"; do
+              base="$(basename "$f")"
+              link="$parent/$base"
+              if [ -e "$link" ] && [ ! -L "$link" ]; then
+                echo "Skipping $base (real file in $parent)"; continue
+              fi
+              ln -sfn "$repo/$f" "$link"
+              ( cd "$parent" && esphome config "$base" >/dev/null )
+              status=$?
+              rm -f "$link"
+              [ $status -ne 0 ] && exit $status
+            done
+          ' --
+        language: system
+        files: ^example_code/.*\.yaml$
+        pass_filenames: true

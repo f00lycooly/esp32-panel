@@ -1,0 +1,261 @@
+# ───────────────────────────────────────────────────────────────────────────────
+# ui-shared.yaml — Shared UI layer, included as a package by
+# waveshare-p4-86-panel.yaml (before the page packages, by convention).
+#
+# Owns:
+#   - The three lvgl singleton keys: buffer_size, style_definitions, on_idle.
+#     (No pages: key here — each page package contributes its own page; ESPHome
+#     concatenates the pages lists in package-declaration order.)
+#   - The two multi-page MDI fonts: mdi_card_28 (card subtitles + inline
+#     controls) and mdi_icon_40 (per-entity icons within feature pages).
+#   - The battery HA sensors batt_kw (read directly (.state) by the energy
+#     Sankey "Now" view; no on_value — the old idle-page labels are gone) and
+#     batt_soc (read by the singleton top-bar battery pill, top-bar.yaml).
+#
+# Cross-package IDs (resolve after package merge): nunito_* fonts and colour
+# names (library theme packages).
+# ───────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  # ───── Page-shell layout contract ─────
+  # The structural skeleton every page is built on. Top and bottom bars are each
+  # 72px and toggle INDEPENDENTLY (omit a bar → that edge becomes content; omit
+  # both → full screen). Bars are flex-row containers; their zones are flex
+  # children of fixed width, so no page hardcodes zone x positions. All geometry
+  # derives from these constants — change a number here, every page follows.
+  #   TOP BAR  (3 zones): Left | Centre | Right. Left & Right = 150px (the main
+  #            battery-pill width); Centre fills 388px. 16px edge gutters.
+  #   BOTTOM BAR (4 zones): 4 equal 172px zones (688 usable / 4).
+  #   CONTENT: y 72 → 648 (height 576) with both bars on; 720 full screen.
+  # See widgets/PAGE-SHELL.md for the copy-paste assembly pattern + the three modes.
+  shell_bar_h: "72"          # height of each bar
+  shell_edge: "16"           # outer edge gutter (bar pad_left/right)
+  shell_side_w: "150"        # top-bar Left/Right zone width (= battery pill)
+  shell_centre_w: "388"      # top-bar Centre zone width (720 - 2*(16+150))
+  shell_zone_h: "60"         # zone content height (centred in the 72px bar)
+  shell_bz_w: "172"          # bottom-bar zone width (688 / 4)
+  shell_content_y: "72"      # content-region top with the top bar on
+  shell_content_h: "576"     # content-region height with BOTH bars on
+
+  # Home/back target. The page a back chevron / screensaver
+  # wake returns to = the panel's HOME (nav F0 P0). Default main_page (the
+  # now-playing home); a media-less panel can override home_page in
+  # its composition root (e.g. room_page). NOTE: the vendored info.yaml back-target
+  # is NOT yet parameterised — see.
+  home_page: main_page
+
+sensor:
+  - platform: homeassistant
+    id: batt_kw   # +charge / -discharge; read by the energy Sankey "Now" view
+    entity_id: ${battery_power_entity}
+    internal: true
+  # Battery SOC % — feeds the singleton top-bar battery pill (top-bar.yaml reads
+  # the id by contract). Lives here next to batt_kw so every panel that draws the
+  # top bar gets it, page-main or not (Hallway has no page-main).
+  - platform: homeassistant
+    id: batt_soc
+    entity_id: ${battery_soc_entity}
+    internal: true
+
+font:
+  # Small MDI glyphs for card subtitles + inline controls (back chevron, keypad,
+  # media transport, battery direction arrows).
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_card_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_arrow_up_bold      # charging
+      - $mdi_arrow_down_bold    # discharging
+      - $mdi_pause              # idle / no flow
+      # Standard top-bar (top-bar.yaml) battery pill + cog: SOC/flow-state glyph
+      # set painted by topbar_refresh, and the settings cog. The top bar is a
+      # singleton that draws on every page, so its glyphs live in this shared
+      # 28px font (not a page-owned one) — see this font's purpose note above.
+      - $mdi_battery_high
+      - $mdi_battery_charging
+      - $mdi_solar_power
+      - $mdi_transmission_tower_import
+      - $mdi_transmission_tower_export
+      - $mdi_home_lightning_bolt
+      - $mdi_cog
+      - $mdi_chevron_left       # back button
+      - $mdi_plus               # setpoint up / vol
+      - $mdi_minus              # setpoint down / vol
+      - $mdi_backspace          # keypad delete
+      - $mdi_check              # keypad enter
+      - $mdi_close              # modal dismiss
+      - $mdi_play
+      - $mdi_skip_next
+      - $mdi_skip_previous
+      - $mdi_volume_high
+      - $mdi_shuffle            # media shuffle toggle (page-media )
+      - $mdi_repeat             # repeat all (page-media )
+      - $mdi_repeat_off         # repeat off
+      - $mdi_repeat_once        # repeat one
+      - $mdi_crown              # live group coordinator badge (rooms modal )
+      - $mdi_link_variant       # grouped-member badge (rooms modal )
+      # Decorative per-tile glyphs for the Playlists modal grid. Purely
+      # visual variety (paired with per-tile gradients); not data-driven.
+      - $mdi_heart
+      - $mdi_compass
+      - $mdi_guitar_acoustic
+      - $mdi_headphones
+      - $mdi_music_note
+      - $mdi_white_balance_sunny
+      - $mdi_run_fast
+      - $mdi_saxophone
+      # Compact stat-cell glyphs for the 72px bottom bar (page-shell stat_cell,
+      # ) — the climate footer set, rendered at 28px instead of 40px.
+      - $mdi_water_percent
+      - $mdi_weather_partly_cloudy
+      - $mdi_radiator
+      - $mdi_water_boiler
+  # Mid-size card glyphs (per-entity icons within feature pages).
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_icon_40
+    size: 40
+    bpp: 4
+    glyphs:
+      - $mdi_sofa
+      - $mdi_lightbulb
+      - $mdi_lightbulb_outline
+      - $mdi_led_strip_variant
+      - $mdi_television
+      - $mdi_thermometer
+      - $mdi_water_boiler
+      - $mdi_weather_partly_cloudy
+      - $mdi_water_percent
+      - $mdi_shield_lock
+      - $mdi_shield_off
+      - $mdi_lock
+      - $mdi_lock_open
+      - $mdi_speaker
+      - $mdi_radiator
+      - $mdi_speaker_multiple   # Rooms launch-dock icon (media hub )
+      - $mdi_playlist_music     # Playlists launch-dock icon (media hub )
+      - $mdi_link_variant       # Group action (rooms modal )
+      - $mdi_link_off           # Ungroup action (rooms modal )
+
+  # ───── Oswald — "Terminal" display family ─────
+  # Replaces Nunito as the panel's font across every app page (Home / Energy /
+  # Climate / Media / Screensaver). GF_Latin_Core matches the project's existing
+  # glyph coverage (incl. the ° the climate strip renders). bpp:4 keeps the cost
+  # of running a second family alongside the library's Nunito reasonable. Weights:
+  # SemiBold everywhere, except the tiniest size (14) which is Bold so small dense
+  # captions stay crisp on the P4 (design call: heavier for tiny labels).
+  - {file: 'assets/fonts/Oswald-Bold.ttf',     id: oswald_14, size: 14, bpp: 4, glyphsets: GF_Latin_Core}
+  - {file: 'assets/fonts/Oswald-SemiBold.ttf', id: oswald_18, size: 18, bpp: 4, glyphsets: GF_Latin_Core}
+  - {file: 'assets/fonts/Oswald-SemiBold.ttf', id: oswald_20, size: 20, bpp: 4, glyphsets: GF_Latin_Core}
+  - {file: 'assets/fonts/Oswald-SemiBold.ttf', id: oswald_24, size: 24, bpp: 4, glyphsets: GF_Latin_Core}
+  - {file: 'assets/fonts/Oswald-SemiBold.ttf', id: oswald_36, size: 36, bpp: 4, glyphsets: GF_Latin_Core}
+  - {file: 'assets/fonts/Oswald-SemiBold.ttf', id: oswald_42, size: 42, bpp: 4, glyphsets: GF_Latin_Core}
+  - {file: 'assets/fonts/Oswald-SemiBold.ttf', id: oswald_48, size: 48, bpp: 4, glyphsets: GF_Latin_Core}
+  - {file: 'assets/fonts/Oswald-SemiBold.ttf', id: oswald_72, size: 72, bpp: 4, glyphsets: GF_Latin_Core}
+
+# ───── LVGL UI ─────
+# Stub main_page — tiles get added incrementally per feature.
+# The library's hardware file already sets byte_order + rotation on `lvgl:`,
+# and common/ota.yaml adds a top_layer OTA overlay; this block extends it
+# with the user-facing pages.
+lvgl:
+  # Draw-buffer placement is the real lever for offloading the display path
+  #. DMA2D flush is ALREADY enabled and hardcoded in the
+  # mipi_dsi driver (esp_lcd_dpi_panel_enable_dma2d) — there is no "turn on DMA"
+  # knob. What IS tunable is where LVGL's draw buffer lives:
+  #   • buffer_size: 100% → ~1 MB buffer → too big for internal SRAM → PSRAM.
+  #     Then every flush is a DMA2D copy reading PSRAM (draw buf) + writing PSRAM
+  #     (scanout FB) while the DPI peripheral continuously reads PSRAM for
+  #     scanout — three-way contention on the one PSRAM bus.
+  #   • The lvgl component only ATTEMPTS internal SRAM when the buffer fraction
+  #     is ≥ 1/4 of the screen (lvgl_esphome.cpp). 15% → frac 8 → ~130 KB, which
+  #     fits internal: render lands in fast internal RAM and the flush reads
+  #     internal → writes PSRAM, taking the draw buffer off the PSRAM bus.
+  #     PARTIAL render mode (full_refresh off, the default) keeps redraws scoped
+  #     to dirty rects, so the smaller buffer just means more (cheap, DMA'd)
+  #     chunks — not more CPU.
+  # Verify on flash: boot log must NOT show "Failed to allocate … internal draw
+  # buffer" (else it fell back to PSRAM = no-op), and free PSRAM should jump
+  # ~1 MB vs the 100% build (see the diagnostic debug sensors in perf-overlay).
+  buffer_size: 15%
+  # ───── Cohesive theme ─────
+  # Named styles so every card inherits the project's visual language by reference.
+  # Semantic per-state colours (battery SOC, alarm state, tariff) stay in their
+  # driving lambdas; everything structural lives here. Extends the library's
+  # page_style / time_style (from common/theme/theme_style.yaml).
+  style_definitions:
+    # Translucent rounded card container with a thin border.
+    - id: card
+      bg_color: slate_blue_gray
+      bg_opa: 70%
+      radius: 18
+      border_width: 1
+      border_color: gray700
+      pad_all: 14
+    # Home-grid navigation tile.
+    - id: nav_tile
+      bg_color: very_dark_gray
+      bg_opa: cover
+      radius: 20
+      border_width: 0
+      pad_all: 6
+    # Pill-shaped strip element (tariff banner, badges).
+    - id: pill
+      bg_color: very_dark_gray
+      bg_opa: cover
+      radius: 26
+      border_width: 0
+      pad_all: 10
+    # Page header title.
+    - id: header_title
+      text_font: oswald_24
+      text_color: white
+    # Large primary value.
+    - id: value_lg
+      text_font: oswald_48
+      text_color: white
+    # Small caption under a value.
+    - id: caption
+      text_font: oswald_14
+      text_color: gray500
+    # ───── Page-shell chrome ─────
+    # Bar background. A subtle fill lifts the bar off the page; the 1px divider
+    # rule lives in shell_divider (a separate full-width line the page places at
+    # the bar's inner edge — border_side is not reliably stylable, so we draw the
+    # rule as its own 1px obj). Bars set their flex layout + width/height inline
+    # (layout is not stylable); only the visual chrome lives here.
+    - id: shell_bar
+      bg_color: 0x101216
+      bg_opa: cover
+      border_width: 0
+      radius: 0
+      pad_top: 0
+      pad_bottom: 0
+      pad_left: $shell_edge
+      pad_right: $shell_edge
+    # 1px separator rule between a bar and the content region.
+    - id: shell_divider
+      bg_color: gray700
+      bg_opa: cover
+      border_width: 0
+      radius: 0
+      pad_all: 0
+    # A bar zone: transparent, padding-free, non-scrollable. Holds ONE slot
+    # widget centred via the child's `align: CENTER` (single child → no flex
+    # needed). Width/height set inline (side=150, centre=388, bottom=172).
+    - id: shell_zone
+      bg_opa: TRANSP
+      border_width: 0
+      radius: 0
+      pad_all: 0
+  # Screensaver: after inactivity, drop to the Terminal
+  # clock/weather page. It's a full-screen tap-to-wake button → returns to main_page
+  # on any touch. (The energy Sankey is still reachable via the home battery button.)
+  on_idle:
+    timeout: 45s
+    then:
+      # Idle can fire mid-takeover: abort it first (takeover.yaml — included by
+      # all three panels) so nav_suspended and the floating back chevron can't
+      # leak past the screensaver into the woken UI.
+      - script.execute: takeover_abort
+      - lvgl.page.show: screensaver_page

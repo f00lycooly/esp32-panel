@@ -1,0 +1,47 @@
+# ───────────────────────────────────────────────────────────────────────────
+# tile_toggle.yaml — reusable entity-toggle tile (icon + caption, taps call a
+# Home Assistant action). WRAPPER-FREE for LVGL v9 reasons
+# (see bd memory `lvgl-v9-obj-clickable-default`).
+#
+# The icon label carries `icon_id` so a text_sensor on_value lambda can recolour
+# it on state change; the button carries `tile_id` so the same lambda can toggle
+# its border (on-glow). Keep those IDs stable when converting existing tiles.
+#
+# Usage:
+#   - !include
+#       file: widgets/tile_toggle.yaml
+#       vars: {tile_id: btn_light_sofa, col: 0, row: 0,
+#              icon_id: ic_sofa, glyph: $mdi_sofa, caption: Sofa,
+#              ha_action: light.toggle, entity: light.living_room_sofa_lights}
+#
+# vars: tile_id, col, row, icon_id, glyph, caption, ha_action, entity
+# ───────────────────────────────────────────────────────────────────────────
+button:
+  id: ${tile_id}
+  styles: card
+  border_color: ep_orange
+  grid_cell_column_pos: ${col}
+  grid_cell_row_pos: ${row}
+  grid_cell_x_align: STRETCH
+  grid_cell_y_align: STRETCH
+  layout:
+    type: flex
+    flex_flow: COLUMN
+    flex_align_main: CENTER
+    flex_align_cross: CENTER
+    pad_row: 8
+  widgets:
+    - label:
+        id: ${icon_id}
+        text: ${glyph}
+        text_font: mdi_icon_40
+        text_color: gray500
+    - label:
+        text: "${caption}"
+        text_font: nunito_24
+        text_color: white
+  on_click:
+    - homeassistant.action:
+        action: ${ha_action}
+        data:
+          entity_id: ${entity}

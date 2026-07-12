@@ -1,0 +1,3 @@
+lvgl_screenshot:
+  pages:
+    - {name: room, page: room_page}

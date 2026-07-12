@@ -1,0 +1,157 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# takeover.yaml — full-screen takeover framework.
+# Included as a package by waveshare-p4-86-panel.yaml. Builds on nav2d.
+#
+# A "takeover" is a focused sub-view that SUSPENDS the 2D swipe-nav and is left
+# via a back chevron — Pick Music, Browse (drill-down), Set Timer, the alarm
+# sub-pickers, Settings. Two shapes, one contract:
+#
+#   • PAGE takeover  — its own lvgl page (does NOT include nav2d-swipe.yaml, so
+#       vertical/horizontal function swipes never fire). It hosts its own back
+#       chevron in the top-bar LEFT slot (widgets/icon_button.yaml → takeover_exit)
+#       and may wire its OWN on_swipe_left/right to an internal pager (page dots).
+#   • OVERLAY takeover — a top_layer widget shown over the live page. The page
+#       underneath stays the active screen, so its swipe handlers are still live —
+#       nav_suspended (honoured by nav_go) is what stops them navigating behind the
+#       overlay. Because the active screen NEVER changes, exit must NOT screen-load:
+#       it restores the nav chrome in place.
+#
+# Contract — the two modes are now EXPLICIT:
+#   PAGE     open : `[{script.execute: takeover_enter}, {lvgl.page.show: <id>}]`
+#            exit : back chevron → `script.execute: takeover_exit`
+#   OVERLAY  open : `[{script.execute: takeover_overlay_enter}, {lvgl.widget.show: <id>}]`
+#            exit : the overlay's close control → `script.execute: takeover_exit`
+#                   then `lvgl.widget.hide: <id>` (+ its scrim, if any)
+#
+# takeover_enter (PAGE) records the screen to return to, raises nav_suspended, hides
+# the nav position-dots, shows the framework's floating back chevron, and marks the
+# takeover as NON-overlay. A PAGE takeover that draws its own header chevron can hide
+# the floating one (`lvgl.widget.hide: takeover_back`) right after entering.
+#
+# takeover_overlay_enter (OVERLAY) raises nav_suspended, hides the nav dots, shows
+# the floating back chevron, and marks the takeover as overlay — but captures no
+# return screen (there is no screen change to undo).
+#
+# takeover_exit is mode-aware: it lowers nav_suspended and hides the floating chevron,
+# then — for a PAGE takeover — slides back to the recorded screen (whose on_load
+# nav_arrive restores coords + dots); for an OVERLAY takeover it restores the nav
+# chrome in place with NO screen load (the caller hides its own overlay widget).
+# Single-level return by design: drill-down (Browse) is internal to one takeover
+# page, so exiting always lands back on the launcher.
+#
+# EXCEPTION (documented): the Rooms / Playlists modals in page-main.yaml /
+# page-media.yaml use the library popup_system scrim contract (popup_scrim +
+# lvgl.widget.show/hide) rather than takeover_overlay_*. That scrim is itself a
+# top_layer widget that intercepts gestures, so nav can't navigate behind it. New
+# overlays that need nav-chrome suppression + the floating back chevron should use
+# takeover_overlay_enter/exit instead.
+#
+# Cross-package ids: nav_suspended + nav_chrome + nav_arrive (nav2d.yaml);
+# mdi_card_28 / oswald fonts (ui-shared); lvgl top_layer (ui-foundation).
+# ─────────────────────────────────────────────────────────────────────────────
+
+globals:
+  # The screen to return to when the current takeover exits. Captured at enter
+  # (PAGE mode only; an OVERLAY takeover never changes the active screen).
+  - id: nav_return_screen
+    type: lv_obj_t*
+    restore_value: false
+    initial_value: "nullptr"
+  # True while the current takeover is an OVERLAY (top_layer widget over the live
+  # page) rather than a PAGE (own lvgl screen). takeover_exit reads it to decide
+  # whether to screen-load the return screen or just restore chrome in place.
+  - id: takeover_overlay
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+script:
+  # PAGE open: call this, THEN `lvgl.page.show` your page.
+  - id: takeover_enter
+    then:
+      - lambda: |-
+          id(nav_return_screen) = lv_screen_active();
+          id(nav_suspended) = true;
+          id(takeover_overlay) = false;
+      - script.execute: {id: nav_chrome, x: 0}     # hide the function/page dots
+      - lvgl.widget.show: takeover_back             # floating back affordance
+
+  # OVERLAY open: call this, THEN `lvgl.widget.show` your top_layer overlay. The
+  # active screen is unchanged, so no return screen is captured — exit restores the
+  # nav chrome in place rather than screen-loading.
+  - id: takeover_overlay_enter
+    then:
+      - lambda: |-
+          id(nav_suspended) = true;
+          id(takeover_overlay) = true;
+      - script.execute: {id: nav_chrome, x: 0}     # hide the function/page dots
+      - lvgl.widget.show: takeover_back             # floating back affordance
+
+  # Exit: wired to the back chevron (framework floating one, or a page's own) or an
+  # overlay's close control. Mode-aware: OVERLAY restores chrome in place
+  # with NO screen load; PAGE slides the recorded launcher back in.
+  - id: takeover_exit
+    then:
+      - lvgl.widget.hide: takeover_back
+      - if:
+          condition:
+            lambda: "return id(takeover_overlay);"
+          then:
+            # OVERLAY: the active screen never changed, so do NOT screen-load (that
+            # would needlessly reload + re-animate the live page). Restore the nav
+            # chrome directly; the caller hides its own overlay widget (+ scrim).
+            - lambda: |-
+                id(nav_suspended) = false;
+                id(takeover_overlay) = false;
+            - script.execute: {id: nav_chrome, x: 1}
+          else:
+            # PAGE: slide the recorded launcher back in from the left (mirror of a
+            # drill-in). Its on_load (nav_arrive) restores coords + the nav dots.
+            - lambda: |-
+                id(nav_suspended) = false;
+                if (id(nav_return_screen) != nullptr) {
+                  lv_screen_load_anim(id(nav_return_screen),
+                                      LV_SCR_LOAD_ANIM_OUT_RIGHT, 250, 0, false);
+                }
+
+  # Abort: reset takeover state IN PLACE, with no screen load and no chrome
+  # restore — for the idle path (ui-shared's on_idle, which every device wires
+  # through this script since all three panels include takeover.yaml). Without
+  # it, idling mid-takeover strands nav_suspended=true (dead swipes after wake)
+  # and the floating chevron over the screensaver. Safe no-op when no takeover
+  # is up; the caller shows the screensaver itself (its on_load hides chrome).
+  - id: takeover_abort
+    then:
+      - lvgl.widget.hide: takeover_back
+      - lambda: |-
+          id(nav_suspended) = false;
+          id(takeover_overlay) = false;
+          id(nav_return_screen) = nullptr;
+
+# Framework-managed floating back chevron (top_layer, hidden by default). Shown by
+# takeover_enter; sits in the top-bar LEFT slot position. PAGE takeovers that draw
+# their own header chevron hide this one after entering.
+lvgl:
+  top_layer:
+    widgets:
+      - button:
+          id: takeover_back
+          hidden: true
+          align: TOP_LEFT
+          x: 16
+          y: 8
+          width: 56
+          height: 56
+          radius: 28
+          bg_color: 0x2A2A2A
+          border_width: 0
+          pad_all: 0
+          widgets:
+            - label:
+                clickable: false
+                align: CENTER
+                text: $mdi_chevron_left
+                text_font: mdi_card_28
+                text_color: 0xF4F6F8
+          on_click:
+            - script.execute: takeover_exit

@@ -1,0 +1,106 @@
+# sonos_topology.yaml — HA package: system-wide "what's playing where" sensor
+# for the panels' multi-room grid. Register in configuration.yaml:
+#   homeassistant:
+#     packages:
+#       sonos_topology: !include sonos_topology.yaml
+# The roster is discovered dynamically via integration_entities('sonos') — no
+# hardcoded room list. CHANGE nothing unless you want a different default room
+# (search for media_player.living_room below).
+
+template:
+  - trigger:
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        seconds: "/5"
+    sensor:
+      - name: Sonos Topology
+        unique_id: sonos_topology
+        icon: mdi:speaker-multiple
+        # Default context room = first PLAYING coordinator (by slug); else Living Room.
+        state: >
+          {% set ps = integration_entities('sonos') | select('match','^media_player\.') | sort %}
+          {% set ns = namespace(room='media_player.living_room', found=false) %}
+          {% for e in ps %}
+            {% set gm = state_attr(e,'group_members') or [e] %}
+            {% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}
+            {% if not ns.found and states(e) == 'playing' and gm[0] == e and not tv %}
+              {% set ns.room = e %}{% set ns.found = true %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.room }}
+        attributes:
+          # Count of discovered Sonos players (sanity / panel sizing).
+          room_count: >
+            {{ integration_entities('sonos') | select('match','^media_player\.') | list | length }}
+          # EVERY speaker: slug|state|isCoord|size|vol%  (";"-joined, sorted by slug).
+          # state becomes `tv` (not `playing`) when the group is on an external input —
+          # consumers gate on == 'playing', so TV rooms drop out of follow/adopt logic.
+          rooms: >
+            {% set ps = integration_entities('sonos') | select('match','^media_player\.') | sort %}
+            {% set ns = namespace(out=[]) %}
+            {% for e in ps %}
+              {% set gm = state_attr(e,'group_members') or [e] %}
+              {% set vol = ((state_attr(e,'volume_level')|float(0))*100)|round(0)|int %}
+              {% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}
+              {% set st = 'tv' if (states(e) == 'playing' and tv) else states(e) %}
+              {% set ns.out = ns.out + [ (e|replace('media_player.',''))~'|'~st~'|'~(1 if gm[0]==e else 0)~'|'~(gm|length|string)~'|'~(vol|string) ] %}
+            {% endfor %}
+            {{ ns.out | join(';') }}
+          # Count of currently-PLAYING groups (coordinators). May exceed 4; g-slots cap at 4.
+          g_count: >
+            {% set ps = integration_entities('sonos') | select('match','^media_player\.') | list %}
+            {% set ns = namespace(n=0) %}
+            {% for e in ps %}
+              {% set gm = state_attr(e,'group_members') or [e] %}
+              {% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}
+              {% if gm[0] == e and states(e) == 'playing' and not tv %}{% set ns.n = ns.n + 1 %}{% endif %}
+            {% endfor %}
+            {{ ns.n }}
+          # Playing groups, rich, stable slot by coordinator slug. g0..g3.
+          g0: >
+            {% set ps = integration_entities('sonos') | select('match','^media_player\.') | list %}
+            {% set ns = namespace(c=[]) %}
+            {% for e in ps %}{% set gm = state_attr(e,'group_members') or [e] %}{% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}{% if gm[0]==e and states(e)=='playing' and not tv %}{% set ns.c = ns.c + [e] %}{% endif %}{% endfor %}
+            {% set coords = ns.c | sort %}
+            {% if coords|length > 0 %}{% set c = coords[0] %}{% set gm = state_attr(c,'group_members') or [c] %}{% set vol = ((state_attr(c,'volume_level')|float(0))*100)|round(0)|int %}{{ c|replace('media_player.','') }}|{{ states(c) }}|{{ vol }}|{{ gm|map('state_attr','friendly_name')|select('string')|join(' + ') }}|{{ gm|map('replace','media_player.','')|join(',') }}|{{ state_attr(c,'media_title')|default('',true) }}|{{ state_attr(c,'media_artist')|default('',true) }}|{{ state_attr(c,'entity_picture')|default('',true) }}{% endif %}
+          g1: >
+            {% set ps = integration_entities('sonos') | select('match','^media_player\.') | list %}
+            {% set ns = namespace(c=[]) %}
+            {% for e in ps %}{% set gm = state_attr(e,'group_members') or [e] %}{% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}{% if gm[0]==e and states(e)=='playing' and not tv %}{% set ns.c = ns.c + [e] %}{% endif %}{% endfor %}
+            {% set coords = ns.c | sort %}
+            {% if coords|length > 1 %}{% set c = coords[1] %}{% set gm = state_attr(c,'group_members') or [c] %}{% set vol = ((state_attr(c,'volume_level')|float(0))*100)|round(0)|int %}{{ c|replace('media_player.','') }}|{{ states(c) }}|{{ vol }}|{{ gm|map('state_attr','friendly_name')|select('string')|join(' + ') }}|{{ gm|map('replace','media_player.','')|join(',') }}|{{ state_attr(c,'media_title')|default('',true) }}|{{ state_attr(c,'media_artist')|default('',true) }}|{{ state_attr(c,'entity_picture')|default('',true) }}{% endif %}
+          g2: >
+            {% set ps = integration_entities('sonos') | select('match','^media_player\.') | list %}
+            {% set ns = namespace(c=[]) %}
+            {% for e in ps %}{% set gm = state_attr(e,'group_members') or [e] %}{% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}{% if gm[0]==e and states(e)=='playing' and not tv %}{% set ns.c = ns.c + [e] %}{% endif %}{% endfor %}
+            {% set coords = ns.c | sort %}
+            {% if coords|length > 2 %}{% set c = coords[2] %}{% set gm = state_attr(c,'group_members') or [c] %}{% set vol = ((state_attr(c,'volume_level')|float(0))*100)|round(0)|int %}{{ c|replace('media_player.','') }}|{{ states(c) }}|{{ vol }}|{{ gm|map('state_attr','friendly_name')|select('string')|join(' + ') }}|{{ gm|map('replace','media_player.','')|join(',') }}|{{ state_attr(c,'media_title')|default('',true) }}|{{ state_attr(c,'media_artist')|default('',true) }}|{{ state_attr(c,'entity_picture')|default('',true) }}{% endif %}
+          g3: >
+            {% set ps = integration_entities('sonos') | select('match','^media_player\.') | list %}
+            {% set ns = namespace(c=[]) %}
+            {% for e in ps %}{% set gm = state_attr(e,'group_members') or [e] %}{% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}{% if gm[0]==e and states(e)=='playing' and not tv %}{% set ns.c = ns.c + [e] %}{% endif %}{% endfor %}
+            {% set coords = ns.c | sort %}
+            {% if coords|length > 3 %}{% set c = coords[3] %}{% set gm = state_attr(c,'group_members') or [c] %}{% set vol = ((state_attr(c,'volume_level')|float(0))*100)|round(0)|int %}{{ c|replace('media_player.','') }}|{{ states(c) }}|{{ vol }}|{{ gm|map('state_attr','friendly_name')|select('string')|join(' + ') }}|{{ gm|map('replace','media_player.','')|join(',') }}|{{ state_attr(c,'media_title')|default('',true) }}|{{ state_attr(c,'media_artist')|default('',true) }}|{{ state_attr(c,'entity_picture')|default('',true) }}{% endif %}
+          # Back-compat: human label of the first playing group (was used by /.22).
+          group_label: >
+            {% set ps = integration_entities('sonos') | select('match','^media_player\.') | sort %}
+            {% set ns = namespace(label='') %}
+            {% for e in ps %}
+              {% set gm = state_attr(e,'group_members') or [e] %}
+              {% set tv = ((state_attr(gm[0],'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(gm[0],'media_content_id') or '').startswith('x-sonos-htastream')) %}
+              {% if not ns.label and states(e)=='playing' and gm[0]==e and not tv %}
+                {% set ns.label = gm | map('state_attr','friendly_name') | select('string') | join(' + ') %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.label }}
+
+# ── Follow-Me toggle ─────────────────────────────────────────────────────────
+# The main page's Follow-Me chip toggles this boolean. The follow-me BEHAVIOUR
+# (moving music between rooms on presence) is an external automation of your
+# choice reading this flag — the panel only sets/reads it. Without an
+# automation the chip is a harmless on/off indicator.
+input_boolean:
+  sonos_follow_me:
+    name: Sonos Follow Me
+    icon: mdi:speaker-wireless

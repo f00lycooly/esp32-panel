@@ -1,0 +1,775 @@
+# ESP32-P4 panel — ASSIST module
+#
+# The full voice/audio stack, split out of waveshare-p4-86-panel.yaml so the
+# base ESP can be brought up first and this layer enabled as a chunk. Pulled in
+# as a package from the core file:
+#
+#   packages:
+#     assist: !include modules/assist.yaml
+#
+# Self-contained and LVGL-free: this module shares no IDs with the UI module, so
+# it can be enabled on its own (or alongside ui) atop the core. It contributes
+# its own substitutions plus esphome.on_boot via package merge.
+#
+# Owns: voice_assistant, micro_wake_word, on-device media_player, the Assist
+# scripts, the Assist switches/selects, the forced-reboot button, the side
+# physical button, and the Assist-scoped globals.
+
+substitutions:
+  # DEFAULT target room speaker (first boot only). At runtime the target is the
+  # `target_speaker` text entity below, editable from HA — change it to voice
+  # from any room without reflashing. This substitution only seeds its initial
+  # value. .
+  external_media_player: ${media_local_slug}   # the panel's local room speaker (slug)
+  home_assistant_host: ${ha_base_url}   # : HA origin from the composition root
+
+  ######  Audio Files ######
+  # FLAC files for on-device sounds (used by media_player.files below).
+  # Vendored locally under assets/sounds/ (deployed to /config/assets by `make sync`)
+  # so the build has no remote dependency. Paths resolve from the config root.
+  timerfinished_ondevice: assets/sounds/timer_finished.flac
+  wakesound_ondevice: assets/sounds/awake.flac
+  notify_ondevice: assets/sounds/notify.flac
+  # HA paths for external audio sounds (used when output_audio is on)
+  timerfinished_external: /local/sounds/timer_finished.mp3
+  wakesound_external: /local/sounds/awake.mp3
+  notify_external: /local/sounds/notify.mp3
+
+  ######  Voice Assistant Phase IDs ######
+  voice_assist_idle_phase_id: "1"
+  voice_assist_listening_phase_id: "2"
+  voice_assist_thinking_phase_id: "3"
+  voice_assist_replying_phase_id: "4"
+  voice_assist_not_ready_phase_id: "10"
+  voice_assist_error_phase_id: "11"
+  voice_assist_muted_phase_id: "12"
+  voice_assist_timer_finished_phase_id: "20"
+  voice_assist_timer_finishing_phase_id: "30"
+
+esphome:
+  on_boot:
+    priority: 600
+    then:
+      # The internal "stop" control model must only be live while a timer rings
+      # (enabled in timer_ringing.on_turn_on, disabled in its on_turn_off).
+      # Disable it at boot too — otherwise, before the first ring, saying "stop"
+      # starts a full assist session.
+      - micro_wake_word.disable_model: stop
+      - delay: 15s
+      - if:
+          condition:
+            switch.is_on: output_audio
+          then:
+            media_player.volume_set:
+              id: my_media_player
+              volume: 0
+      - delay: 30s
+      - if:
+          condition:
+            lambda: return id(init_in_progress);
+          then:
+            - lambda: id(init_in_progress) = false;
+
+globals:
+  - id: init_in_progress
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: voice_assistant_phase
+    type: int
+    restore_value: false
+    initial_value: ${voice_assist_not_ready_phase_id}
+  - id: global_is_assisting
+    type: bool
+    restore_value: false
+  - id: voice_assistant_timeout
+    type: int
+    restore_value: false
+    # 2s, not 15s. The on-device media_player is only a negotiation/completion
+    # shim (it forces MP3 TTS + gives a playback-complete signal); its actual i2s
+    # playback STALLS on this P4 shared-bus hardware even with the mic stopped, so
+    # it never finishes naturally. The real audio is on the Sonos. on_end waits
+    # this long for the (stalled) on-device playback, then abandons it so the
+    # satellite returns to idle promptly instead of hanging ~15s. .
+    initial_value: '2000'
+
+script:
+  # ───── Assist scripts (ported from baseline; IDs match agillis hardware file) ─────
+  - id: start_wake_word
+    then:
+      - lambda: ESP_LOGD("script", "start_wake_word");
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - lambda: return id(wake_word_engine_location).current_option() == "On device";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - micro_wake_word.start:
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - lambda: return id(wake_word_engine_location).current_option() == "In Home Assistant";
+          then:
+            - lambda: id(va).set_use_wake_word(true);
+            - voice_assistant.start_continuous:
+
+  - id: stop_wake_word
+    then:
+      - lambda: ESP_LOGD("script", "stop_wake_word");
+      - if:
+          condition:
+            lambda: return id(wake_word_engine_location).current_option() == "In Home Assistant";
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - voice_assistant.stop:
+      - if:
+          condition:
+            lambda: return id(wake_word_engine_location).current_option() == "On device";
+          then:
+            - micro_wake_word.stop:
+
+  - id: set_idle_or_mute_phase
+    then:
+      - lambda: ESP_LOGD("script", "set_idle_or_mute_phase");
+      - if:
+          condition:
+            switch.is_off: mute_switch
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          else:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+
+  - id: timer_started_external
+    then:
+      while:
+        condition:
+          switch.is_on: timer_ringing
+        then:
+          - homeassistant.action:
+              action: media_player.play_media
+              data:
+                entity_id: !lambda 'return id(target_speaker).state;'
+                media_content_id: '${home_assistant_host}${timerfinished_external}'
+                media_content_type: music
+          - delay: 1700ms
+
+  - id: stopalarmtimer
+    mode: restart
+    then:
+      - switch.turn_off: timer_ringing
+      - script.execute: set_idle_or_mute_phase
+
+  # Auto-stop a ringing timer after 30s. mode: restart so a cancel + re-ring
+  # within the window restarts the countdown instead of a stale delay from the
+  # previous ring killing the new one early. Stopped in timer_ringing.on_turn_off.
+  - id: timer_ring_autostop
+    mode: restart
+    then:
+      - delay: 30s
+      - switch.turn_off: timer_ringing
+
+media_player:
+  - platform: speaker
+    name: Media Player
+    id: my_media_player
+    task_stack_in_psram: true
+    volume_increment: 0.05
+    volume_min: 0.5
+    volume_max: 0.8
+    announcement_pipeline:
+      speaker: announcement_resampling_speaker
+      # MP3 (not the default FLAC): the TTS response is mirrored to the Sonos as a
+      # ducked announce, and Sonos AudioClip announce only accepts MP3/WAV. Setting
+      # the announcement format to MP3 makes the HA pipeline render the GLaDOS voice
+      # straight to MP3, so we forward the pipeline's OWN tts url to the Sonos (no
+      # re-synth, correct voice). .
+      format: MP3
+      sample_rate: 48000
+      num_channels: 1
+    media_pipeline:
+      speaker: media_resampling_speaker
+      format: FLAC
+      num_channels: 2
+      sample_rate: 48000
+    files:
+      - id: timer_finished_sound
+        file: ${timerfinished_ondevice}
+      - id: wake_sound_file
+        file: ${wakesound_ondevice}
+      - id: notify_sound_file
+        file: ${notify_ondevice}
+    on_state:
+      then:
+        - lambda: ESP_LOGD("media_player", "on_state");
+        - if:
+            condition:
+              and:
+                - switch.is_off: timer_ringing
+                - not:
+                    voice_assistant.is_running:
+                - not:
+                    media_player.is_announcing:
+            then:
+              - mixer_speaker.apply_ducking:
+                  id: media_mixing_input
+                  decibel_reduction: 0
+                  duration: 1.0s
+    on_play:
+      - lambda: ESP_LOGD("media_player", "on_play");
+      # Timeout so a stuck global_is_assisting (e.g. a pipeline that never fires
+      # on_end) can't wedge playback forever; execution continues after 30s.
+      - wait_until:
+          condition:
+            - lambda: return id(global_is_assisting) == false;
+          timeout: 30s
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - script.execute: stop_wake_word
+            # Strategic fix: the mic and speaker share ONE
+            # i2s peripheral and cannot be active at once. Wait for the mic to
+            # actually release the bus before the speaker grabs it — is_capturing
+            # is the real bus-level signal and covers BOTH wake engines. The old
+            # code only waited in the "In Home Assistant" branch (on
+            # voice_assistant.is_running); the on-device micro_wake_word path had
+            # no wait, so the speaker raced the mic teardown → "Parent bus is
+            # busy" + queues desynced.
+            - wait_until:
+                - not:
+                    microphone.is_capturing:
+    on_announcement:
+      - lambda: ESP_LOGD("media_player", "on_announcement");
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - script.execute: stop_wake_word
+            # Strategic fix: serialise mic-release before the
+            # speaker starts the announcement (shared i2s bus). Gate on the real
+            # bus-level signal so BOTH wake engines are covered — see on_play.
+            - wait_until:
+                - not:
+                    microphone.is_capturing:
+      - mixer_speaker.apply_ducking:
+          id: media_mixing_input
+          decibel_reduction: 20
+          duration: 0.0s
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+    on_idle:
+      - lambda: ESP_LOGD("media_player", "on_idle");
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - wait_until:
+                - not:
+                    speaker.is_playing:
+                      id: my_speaker
+            - script.execute: start_wake_word
+            - script.execute: set_idle_or_mute_phase
+    on_pause:
+      - media_player.stop
+
+micro_wake_word:
+  id: mww
+  vad:
+    probability_cutoff: 0.20
+    sliding_window_size: 1
+  stop_after_detection: false
+  # All models vendored locally under assets/microwakeword/ (each .json + its
+  # .tflite). No remote fetch at build time. Paths resolve from the config root.
+  # : fleet is GLaDOS-only — okay_nabu/hey_mycroft/hey_jarvis/alexa/okay_hal/
+  # hey_luna removed to save flash + RAM. Only the GLaDOS wake word + the internal
+  # "stop" control word remain.
+  models:
+    # GLaDOS persona wake word. On-device path; the HA-side
+    # openWakeWord path is also available via the wake_word_engine_location select.
+    # Model: pham-tuan-binh/glados-respeaker (MIT).
+    - model: assets/microwakeword/glados.json
+      id: glados
+    - model: assets/microwakeword/stop.json
+      id: stop
+      internal: true
+      probability_cutoff: 0.40
+      sliding_window_size: 3
+  on_wake_word_detected:
+    # Wake the screen on voice too: a wake word should light the panel even with
+    # nobody touching it. Idempotent when the backlight is already on.
+    - light.turn_on: display_backlight
+    - if:
+        condition:
+          switch.is_on: timer_ringing
+        then:
+          - script.execute: stopalarmtimer
+        else:
+          - if:
+              condition:
+                voice_assistant.is_running:
+              then:
+                voice_assistant.stop:
+              else:
+                # Do NOT grab the external room speaker on wake — no media_stop,
+                # no wake chime. Interrupting/ducking the Sonos should happen only
+                # on the TTS RESPONSE (see on_tts_end), not when the wake word
+                # fires (it was stopping TV playback + replacing audio on every
+                # "hey GLaDOS"). The LISTENING overlay + backlight already signal
+                # we're listening. .
+                - if:
+                    condition:
+                      media_player.is_announcing:
+                    then:
+                      - media_player.stop:
+                          announcement: true
+                    else:
+                      - lambda: id(global_is_assisting) = true;
+                      - delay: 50ms
+                      # On-device wake chime only on the (now-disabled)
+                      # output_audio-OFF path; with output_audio ON the i2s bus is
+                      # RX-only so we play no wake chime at all.
+                      - if:
+                          condition:
+                            and:
+                              - switch.is_off: output_audio
+                              - switch.is_on: wake_sound
+                          then:
+                            - media_player.speaker.play_on_device_media_file:
+                                media_file: wake_sound_file
+                                announcement: true
+                            - wait_until:
+                                not:
+                                  - media_player.is_announcing:
+                            - delay: 150ms
+                      - voice_assistant.start:
+                          wake_word: !lambda return wake_word;
+
+voice_assistant:
+  id: va
+  # The local baseline-derived hardware package declares my_microphone as a
+  # single (mono) i2s channel, so only channel 0 exists. The baseline this was ported
+  # from assumed a stereo mic with an AEC reference on channel 1 — not available here.
+  microphone:
+    - microphone: my_microphone
+      channels: 0
+  # On-device media_player IS attached, but for negotiation + completion, not for
+  # audible output: the user hears the response on the Sonos (output_audio ON sets
+  # this player to vol 0, and on_tts_end mirrors the tts url to the room speaker).
+  # Attaching it makes the HA pipeline render TTS in our MP3 announcement format
+  # (Sonos-compatible) using the real GLaDOS voice, and gives a native playback-
+  # complete signal so the satellite leaves "responding". The on-device speaker
+  # still briefly drives the shared i2s TX during the response; the mic/speaker
+  # contention that causes is serialised away in on_play/on_announcement (stop the
+  # wake word + wait for the mic to release the bus before the speaker starts) and
+  # on_idle (restart the wake word only after the speaker stops). .
+  media_player: my_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 4.0
+  on_wake_word_detected:
+    # Wake the screen on the HA-side wake path too (mirror of the mww handler).
+    - light.turn_on: display_backlight
+    - if:
+        condition:
+          switch.is_on: timer_ringing
+        then:
+          - script.execute: stopalarmtimer
+        else:
+          # Do NOT grab the external room speaker on wake (see mww handler) —
+          # only the TTS response ducks the Sonos. .
+          - if:
+              condition:
+                media_player.is_announcing:
+              then:
+                - media_player.stop:
+                    announcement: true
+              else:
+                - lambda: id(global_is_assisting) = true;
+                - delay: 50ms
+                - if:
+                    condition:
+                      and:
+                        - switch.is_off: output_audio
+                        - switch.is_on: wake_sound
+                    then:
+                      - media_player.speaker.play_on_device_media_file:
+                          media_file: wake_sound_file
+                          announcement: true
+                      - wait_until:
+                          not:
+                            - media_player.is_announcing:
+                      - delay: 150ms
+  on_listening:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+  on_stt_vad_end:
+    - lambda: ESP_LOGD("voice_assistant", "on_stt_vad_end");
+    - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+  on_intent_progress:
+    - if:
+        condition:
+          lambda: 'return !x.empty();'
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+  on_tts_start:
+    - if:
+        condition:
+          lambda: 'return id(voice_assistant_phase) != ${voice_assist_replying_phase_id};'
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+  on_tts_end:
+    - lambda: ESP_LOGD("voice_assistant", "on_tts_end");
+    - if:
+        condition:
+          - switch.is_on: output_audio
+        then:
+          # Mirror the pipeline's OWN tts output (x) — now an MP3 url in the GLaDOS
+          # voice, thanks to the MP3 announcement_pipeline — to the room speaker as
+          # a ducked Sonos announce (ducks current playback, then restores). The
+          # on-device player also plays it silently (vol 0) so the pipeline gets a
+          # native completion signal. announce: "true" is coerced to bool by HA.
+          # .
+          - homeassistant.action:
+              action: media_player.play_media
+              data:
+                entity_id: !lambda 'return id(target_speaker).state;'
+                media_content_id: !lambda 'return x;'
+                media_content_type: music
+                announce: "true"
+  on_end:
+    - lambda: ESP_LOGD("voice_assistant", "on_end");
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        condition:
+          - and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  media_player.is_playing:
+        timeout: !lambda |-
+          return id(voice_assistant_timeout);
+    - if:
+        condition:
+          any:
+            - media_player.is_announcing:
+            - media_player.is_playing:
+        then:
+          # Expected on this hardware: the on-device i2s speaker can't actually
+          # play on the shared bus, so the announcement decodes but never drains —
+          # is_announcing stays true. That's fine; the real audio is on the Sonos
+          # (the on-device player is only a TTS-format/completion shim). After
+          # voice_assistant_timeout (2s) we abandon the stalled local playback so
+          # the satellite returns to idle and the wake word restarts. The baseline
+          # used button.press: forced_reboot here — we never reboot. .
+          - lambda: ESP_LOGD("voice_assistant", "Abandoning stalled on-device shim playback (audio is on the Sonos)");
+          - media_player.stop:
+              announcement: true
+          - media_player.stop:
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 0
+        duration: 1.0s
+    - lambda: id(global_is_assisting) = false;
+    - if:
+        condition:
+          - lambda: return id(wake_word_engine_location).current_option() == "On device";
+        then:
+          - lambda: id(va).set_use_wake_word(false);
+          - micro_wake_word.start:
+    - script.execute: set_idle_or_mute_phase
+    - if:
+        condition:
+          and:
+            - switch.is_on: mute_response_switch
+            - switch.is_on: media_mute
+            - switch.is_on: ext_media_mute
+        then:
+          - switch.turn_off: media_mute
+          - switch.turn_off: ext_media_mute
+  on_error:
+    - if:
+        condition:
+          lambda: return !id(init_in_progress);
+        then:
+          - lambda: id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+          - delay: 1s
+          - if:
+              condition:
+                switch.is_off: mute_switch
+              then:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              else:
+                - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+    - lambda: id(global_is_assisting) = false;
+  on_client_connected:
+    - lambda: id(init_in_progress) = false;
+    - script.execute: start_wake_word
+    - script.execute: set_idle_or_mute_phase
+  on_client_disconnected:
+    - script.execute: stop_wake_word
+    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+  on_timer_finished:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_timer_finished_phase_id};
+    - switch.turn_on: timer_ringing
+
+text:
+  # Runtime-editable target room speaker for ALL voice audio (TTS responses,
+  # timer alerts, mute). Holds a full HA media_player entity_id. Editable from the
+  # device's config section in HA, so the panel can be retargeted to any room
+  # without a reflash — nothing is hardcoded. Seeded from the external_media_player
+  # substitution on first boot, then persisted. .
+  - platform: template
+    name: "Voice target speaker"
+    id: target_speaker
+    icon: mdi:speaker-multiple
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: "media_player.${external_media_player}"
+    entity_category: config
+    min_length: 0
+    max_length: 64
+
+button:
+  # Separate from library's "Restart" — used by voice_assistant fallback when
+  # media playback stalls after a timeout.
+  - platform: restart
+    id: forced_reboot
+    name: "Forced Reboot"
+    entity_category: diagnostic
+
+switch:
+  - platform: template
+    name: Output audio externally
+    id: output_audio
+    icon: 'mdi:volume-off'
+    optimistic: true
+    # Forced ON at every boot: voice audio is delivered by the external room
+    # speaker because the on-device i2s speaker can't share the bus with the mic
+    # (see the voice_assistant block / ). ALWAYS_ON (not
+    # RESTORE_DEFAULT_ON) so a reboot can't silently restore a saved OFF and
+    # re-break audio. Toggling OFF at runtime re-enables the on-device
+    # chime/timer branches, which will contend with the mic again.
+    restore_mode: ALWAYS_ON
+    entity_category: config
+    on_turn_on:
+      - media_player.volume_set:
+          id: my_media_player
+          volume: 0
+    on_turn_off:
+      - media_player.volume_set:
+          id: my_media_player
+          volume: 0.8
+
+  - platform: template
+    name: Mute
+    id: mute_switch
+    icon: "mdi:microphone-off"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_off:
+      - microphone.unmute:
+          id: my_microphone
+      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    on_turn_on:
+      - microphone.mute:
+          id: my_microphone
+      - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+
+  - platform: template
+    id: media_mute
+    optimistic: true
+    on_turn_on:
+      - media_player.volume_set:
+          id: my_media_player
+          volume: 0
+    on_turn_off:
+      - media_player.volume_set:
+          id: my_media_player
+          volume: 0.8
+
+  - platform: template
+    id: timer_ringing
+    optimistic: true
+    internal: true
+    restore_mode: ALWAYS_OFF
+    on_turn_off:
+      - script.stop: timer_ring_autostop
+      - micro_wake_word.disable_model: stop
+      - script.execute: set_idle_or_mute_phase
+      - lambda: |-
+              id(my_media_player)
+                ->make_call()
+                .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF)
+                .set_announcement(true)
+                .perform();
+              id(my_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 0);
+      - media_player.stop:
+          announcement: true
+    on_turn_on:
+      - lambda: |-
+            id(my_media_player)
+              ->make_call()
+              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
+              .set_announcement(true)
+              .perform();
+            id(my_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 1000);
+      - if:
+          condition:
+            switch.is_on: output_audio
+          then:
+            - script.execute: timer_started_external
+          else:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: timer_finished_sound
+                announcement: true
+      - micro_wake_word.start:
+      - micro_wake_word.enable_model: stop
+      # Auto-stop after 30s if not cancelled first ("GLaDOS stop", side button, or
+      # the on-screen ✕, all of which turn the switch off and end this loop early).
+      # Runs as a mode: restart script so a cancel + re-ring within 30s can't be
+      # cut short by the previous ring's countdown.
+      - script.execute: timer_ring_autostop
+
+  - platform: template
+    id: wake_sound
+    name: Play wake sound
+    icon: mdi:music
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: template
+    id: mute_response_switch
+    name: Mute Responses
+    icon: mdi:chat-sleep
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: template
+    id: ext_media_mute
+    icon: 'mdi:volume-off'
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_on:
+      - homeassistant.action:
+          action: media_player.volume_mute
+          data:
+            entity_id: !lambda 'return id(target_speaker).state;'
+            is_volume_muted: "true"
+    on_turn_off:
+      - homeassistant.action:
+          action: media_player.volume_mute
+          data:
+            entity_id: !lambda 'return id(target_speaker).state;'
+            is_volume_muted: "false"
+
+select:
+  - platform: template
+    entity_category: config
+    name: Wake word engine location
+    id: wake_word_engine_location
+    icon: "mdi:account-voice"
+    optimistic: true
+    restore_value: true
+    options:
+      - In Home Assistant
+      - On device
+    on_value:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - wait_until:
+                lambda: return id(voice_assistant_phase) == ${voice_assist_muted_phase_id} || id(voice_assistant_phase) == ${voice_assist_idle_phase_id};
+            - if:
+                condition:
+                  lambda: return id(wake_word_engine_location).current_option() == "In Home Assistant";
+                then:
+                  - micro_wake_word.stop:
+                  - delay: 500ms
+                  - if:
+                      condition:
+                        switch.is_off: mute_switch
+                      then:
+                        - lambda: id(va).set_use_wake_word(true);
+                        - voice_assistant.start_continuous:
+            - if:
+                condition:
+                  lambda: return id(wake_word_engine_location).current_option() == "On device";
+                then:
+                  - lambda: id(va).set_use_wake_word(false);
+                  - voice_assistant.stop
+                  - delay: 500ms
+                  - if:
+                      condition:
+                        switch.is_off: mute_switch
+                      then:
+                        - micro_wake_word.start:
+
+  # "Wake word sensitivity" select removed: it only tuned the built-in wake
+  # words that are gone now. GLaDOS uses its vendored model-default cutoff + the
+  # micro_wake_word vad probability_cutoff above.
+
+binary_sensor:
+  ### side physical button ###
+  # Short press stops voice / media / timer; long press triggers the library's
+  # factory-reset button. Lives with assist because the short-press actions
+  # target the voice + on-device media stack.
+  - platform: gpio
+    pin:
+      number: GPIO35
+      mode: INPUT_PULLUP
+      inverted: true
+      ignore_strapping_warning: true
+    id: side_top_button
+    internal: true
+    on_multi_click:
+      # short press: stop voice / media / timer
+      - timing:
+          - ON for at least 50ms
+          - OFF for at least 50ms
+        then:
+          - if:
+              condition:
+                - voice_assistant.is_running
+              then:
+                - voice_assistant.stop
+          - if:
+              condition:
+                - switch.is_on: timer_ringing
+              then:
+                - script.execute: stopalarmtimer
+          - if:
+              condition:
+                - media_player.is_playing:
+              then:
+                - media_player.stop:
+          - if:
+              condition:
+                - switch.is_on: output_audio
+              then:
+                - homeassistant.action:
+                    action: media_player.media_stop
+                    data:
+                      entity_id: !lambda 'return id(target_speaker).state;'
+      # long press: factory reset (library's "Reset" button)
+      - timing:
+          - ON for at least 10s
+        then:
+          - button.press: Reset

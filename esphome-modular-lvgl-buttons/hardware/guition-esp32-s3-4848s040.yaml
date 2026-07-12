@@ -1,0 +1,110 @@
+# Guition ESP32-S3-4848S040 480px X 480px Smart Screen
+# https://devices.esphome.io/devices/guition-esp32-s3-4848s040/
+#
+# Hardware configuration file
+---
+substitutions:
+  # Screen Size
+  screen_height: 480
+  screen_width: 480
+
+esphome:
+  min_version: 2026.5.0
+  project:
+    name: "Guition.ESP32-S3-4848S040"
+    version: "1.0"
+
+esp32:
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    advanced:
+      execute_from_psram: true
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+preferences:
+  flash_write_interval: 5min
+  
+logger:
+  hardware_uart: UART0  
+
+# -------------------------------------------
+# Internal outputs
+# -------------------------------------------
+output:
+  # Backlight LED
+  - platform: ledc
+    pin: GPIO38
+    id: gpio_backlight_pwm
+    frequency: 100Hz
+
+# -------------------------------------------
+# Built in 240v/120v relay
+# Some versions of this switch have 3 relays some have 1
+# -------------------------------------------
+switch:
+  - platform: gpio
+    id: internal_relay_1
+    pin: GPIO40
+  - platform: gpio
+    id: internal_relay_2
+    pin: GPIO02
+  - platform: gpio
+    id: internal_relay_3
+    pin: GPIO01
+
+light:
+  - platform: monochromatic
+    output: gpio_backlight_pwm
+    name: Display Backlight
+    icon: mdi:lightbulb-on
+    id: display_backlight
+    restore_mode: ALWAYS_ON
+
+# -------------------------------------------
+# Touchscreen gt911 i2c
+# -------------------------------------------
+i2c:
+  - id: bus_a
+    sda:
+      number: GPIO19
+    scl:
+      number: GPIO45
+      ignore_strapping_warning: true
+
+touchscreen:
+  platform: gt911
+  id: my_touchscreen
+  display: my_display
+  i2c_id: bus_a
+  transform:
+    mirror_x: true
+    mirror_y: true
+
+# -------------------------------------------
+# Display st7701s spi
+# -------------------------------------------
+# Special LVGL settings required for this display
+lvgl:
+  rotation: ${rotation | default("180")}
+
+spi:
+  - id: lcd_spi
+    clk_pin: GPIO48
+    mosi_pin: GPIO47
+
+display:
+  - platform: mipi_rgb
+    model: GUITION-4848S040
+    id: my_display
+    color_order: RGB
+    # 6 MHz pixel clock gives the bounce buffer more headroom during LVGL
+    # full-screen flushes (e.g. new artwork). 8 MHz still works but leaves
+    # less margin and produces brief tearing marks on heavy redraws.
+    pclk_frequency: 6MHz
+    update_interval: never
+    auto_clear_enabled: False

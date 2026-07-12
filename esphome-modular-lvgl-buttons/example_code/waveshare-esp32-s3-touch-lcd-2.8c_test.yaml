@@ -1,0 +1,93 @@
+---
+# Substitution variables used through the codebase
+substitutions:
+  icon_font: mdi_icons_40
+  text_font: nunito_20
+  text_color: white
+  bg_color: black
+  button_on_color: "ep_orange"
+  button_off_color: "very_dark_gray"
+  icon_on_color: "yellow"
+  icon_off_color: "gray"
+  label_on_color: "white"
+  label_off_color: "gray"
+  button_text_color: "white"
+
+  # LCD back light modes - Code in backlight_time.yaml
+  display_daytime_brightness: "100%"
+  display_nighttime_brightness: "50%"
+  display_night_hour: "0"      # Hour for night mode (0-23)
+  display_night_minute: "0"    # Minute for night mode (0-59)
+  display_backlight_timeout_always_enabled: "false"  # Set true to dim/off in all modes, not just Night
+  display_backlight_timeout_initial: "5"  # Initial backlight timeout in minutes (-1 to disable)
+
+esphome:
+  name: "waveshare-esp32-s3-touch-28c"
+  friendly_name: "Waveshare-2.8-round"
+  comment: "Waveshare ESP32-S3-Touch-LCD-2.8C 480px Round Screen"
+
+# Enable logging
+logger:
+
+script:
+  # --------------------------------------------------------------------------
+  # This script is called once per minute.
+  # Any packages in this library will !extend time_update to update their own labels.
+  # You can add code here to update your own custom labels.
+  # --------------------------------------------------------------------------
+  - id: time_update
+    then:
+      - lambda: |-
+          // No operation
+
+packages:
+  # Generic configuration for ESP32 screens
+  # Include Wi-Fi support
+  wifi: !include esphome-modular-lvgl-buttons/common/wifi.yaml
+  # Enable OTA updates with a status screen
+  ota_screen: !include esphome-modular-lvgl-buttons/common/ota.yaml
+   # Some basic sensors
+  sensors: !include esphome-modular-lvgl-buttons/common/sensors_base.yaml
+  # Styles + Themes + Some nice basic fonts + 1000s of glyphs + all the colors
+  theme:  !include esphome-modular-lvgl-buttons/common/theme/index.yaml
+  # Use this theme for debugging
+  # theme:  !include esphome-modular-lvgl-buttons/common/theme/index_debug.yaml  # uncomment to enable debug outlines
+  # Include if your touch screen has a backlight. Also sets the time from HA
+  backlight: !include esphome-modular-lvgl-buttons/common/backlight_time.yaml
+  # Popup system — code for popup pages lives here, but the popups themselves are defined in the UI section below
+  popup_system: !include esphome-modular-lvgl-buttons/ui/popup/popup_system.yaml
+
+  # Hardware description file
+  hardware: !include
+    file: esphome-modular-lvgl-buttons/hardware/waveshare-esp32-s3-touch-lcd-2.8c.yaml
+    vars:
+      rotation: "0"  # set screen rotation 0, 90, 180, 270
+  # Basic boot screen with ESPHome logo and device diagnostic info
+  loading_screen: !include esphome-modular-lvgl-buttons/pages/loading.yaml
+  # info screen - WiFi login, IP address, MAC address etc
+  info_screen: !include esphome-modular-lvgl-buttons/pages/info.yaml
+
+# LVGL Configuration
+lvgl:
+  buffer_size: 100%
+  pages:
+    - id: main_page
+      widgets:
+        - label:
+            id: coord_text
+            align: CENTER
+            text_align: CENTER
+            text: 'Touch the screen'
+
+touchscreen:
+  - id: !extend my_touchscreen
+    on_update:
+        - lvgl.label.update:
+            id: coord_text
+            text: !lambda return str_sprintf("Touch points:\n id=%d x=%d, y=%d", touches[0].id, touches[0].x, touches[0].y);
+        - lambda: |-
+            for (auto touch: touches)  {
+                if (touch.state <= 2) {
+                  ESP_LOGI("Touch points:", "id=%d x=%d, y=%d", touch.id, touch.x, touch.y);
+                }
+            }

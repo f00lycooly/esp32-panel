@@ -1,0 +1,83 @@
+# Capture registration for the GLaDOS voice persona overlay.
+#
+# va_overlay is NOT a button modal: va_render/va_loop own its HIDDEN flag, driven
+# by the voice_assistant_phase int global (see voice-overlay.yaml). So it can't be
+# captured by un-hiding the widget. Instead each ?modal=voice-* entry registers an
+# empty `show:` plus a `before:` script that sets the phase and renders a settled
+# frame, and an `after:` script that restores the saved phase. The screenshot component
+# switches to screensaver_page first (required for the idle cameo), lets it load,
+# then runs these hooks (see lvgl_screenshot two-phase modal settle).
+#
+# Phase ints (voice-overlay header): 2 listening · 3 thinking · 4 replying ·
+# 11 error · 1 idle (cameo, only while screensaver is the active page).
+#
+# The helper scripts are all-lambda → they run synchronously inside the before/
+# after hook. Each sets the phase, renders once (sets per-phase targets + shows),
+# snaps the eased cur→tgt so the pose is settled, then renders the settled frame.
+# va_render and the va_* globals are defined in voice-overlay.yaml (merged here).
+#
+# Each before-hook saves the live voice_assistant_phase first and va_cap_reset
+# restores it, so a screenshot taken during a real voice session doesn't clobber
+# the session's phase.
+globals:
+  - id: va_cap_saved_phase
+    type: int
+    restore_value: false
+    initial_value: "1"
+
+script:
+  - id: va_cap_listening
+    then:
+      - lambda: 'id(va_cap_saved_phase) = id(voice_assistant_phase); id(voice_assistant_phase) = 2;'
+      - script.execute: va_render
+      - lambda: |-
+          id(va_cur_eye) = id(va_tgt_eye); id(va_cur_rot) = id(va_tgt_rot);
+          id(va_cur_px)  = id(va_tgt_px);  id(va_cur_py)  = id(va_tgt_py);
+      - script.execute: va_render
+  - id: va_cap_thinking
+    then:
+      - lambda: 'id(va_cap_saved_phase) = id(voice_assistant_phase); id(voice_assistant_phase) = 3;'
+      - script.execute: va_render
+      - lambda: |-
+          id(va_cur_eye) = id(va_tgt_eye); id(va_cur_rot) = id(va_tgt_rot);
+          id(va_cur_px)  = id(va_tgt_px);  id(va_cur_py)  = id(va_tgt_py);
+      - script.execute: va_render
+  - id: va_cap_replying
+    then:
+      - lambda: 'id(va_cap_saved_phase) = id(voice_assistant_phase); id(voice_assistant_phase) = 4;'
+      - script.execute: va_render
+      - lambda: |-
+          id(va_cur_eye) = id(va_tgt_eye); id(va_cur_rot) = id(va_tgt_rot);
+          id(va_cur_px)  = id(va_tgt_px);  id(va_cur_py)  = id(va_tgt_py);
+      - script.execute: va_render
+  - id: va_cap_error
+    then:
+      - lambda: 'id(va_cap_saved_phase) = id(voice_assistant_phase); id(voice_assistant_phase) = 11;'
+      - script.execute: va_render
+      - lambda: |-
+          id(va_cur_eye) = id(va_tgt_eye); id(va_cur_rot) = id(va_tgt_rot);
+          id(va_cur_px)  = id(va_tgt_px);  id(va_cur_py)  = id(va_tgt_py);
+      - script.execute: va_render
+  - id: va_cap_idle
+    then:
+      - lambda: 'id(va_cap_saved_phase) = id(voice_assistant_phase); id(voice_assistant_phase) = 1;'
+      - script.execute: va_render
+      - lambda: |-
+          id(va_cur_eye) = id(va_tgt_eye); id(va_cur_rot) = id(va_tgt_rot);
+          id(va_cur_px)  = id(va_tgt_px);  id(va_cur_py)  = id(va_tgt_py);
+      - script.execute: va_render
+  # Restore: back to the phase saved by the before-hook (idle when no session was
+  # live). Runs after the page is restored, so off the screensaver va_render takes
+  # the shown→hidden edge and hides the persona.
+  - id: va_cap_reset
+    then:
+      - lambda: 'id(voice_assistant_phase) = id(va_cap_saved_phase);'
+      - script.execute: va_render
+
+lvgl_screenshot:
+  modals:
+    - {name: voice-listening, page: screensaver_page, before: [va_cap_listening], after: [va_cap_reset]}
+    - {name: voice-thinking,  page: screensaver_page, before: [va_cap_thinking],  after: [va_cap_reset]}
+    - {name: voice-replying,  page: screensaver_page, before: [va_cap_replying],  after: [va_cap_reset]}
+    - {name: voice-error,     page: screensaver_page, before: [va_cap_error],     after: [va_cap_reset]}
+    - {name: voice-idle,      page: screensaver_page, before: [va_cap_idle],      after: [va_cap_reset]}

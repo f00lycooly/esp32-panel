@@ -1,0 +1,131 @@
+# Hallway ESP32-P4 panel — example status-panel composition root (SKELETON).
+#
+# "By the door" status panel. Functions (nav2d): F0 Room (Lights) · F1 Climate
+# (whole-home + hot water) · F2 Security (Doors & Windows open-overview).
+# NO Voice, NO Bluetooth. Idle → clock/weather screensaver.
+#
+# Demonstrates the same multi-panel pattern as kitchen-panel.yaml: include
+# user_config FIRST, then override only the per-panel keys inline (device-file
+# substitutions win over package ones). This variant also shows a panel that
+# DROPS packages: no assist, no ble_proxy, no media pages.
+#
+# Function order keeps Climate at its native nav index (F1) so its dots stay
+# correct; Room (F0) and Security (F2) are stubs and set their own coords.
+# HOME = room_page (no media now-playing on this panel).
+#
+# ⚠ COMPILE DEPENDENCY: the universal top-bar cog targets info_screen, whose
+# vendored back-target hardcodes main_page. This panel has no main_page, so it
+# will not compile until the chrome home-page target is parameterised. The
+# Room/Security cards can be developed independently of that.
+#
+# Copy this file to the repo root before running (the modules/ and
+# user-config.yaml include paths resolve from the config root):
+#   cp examples/hallway-panel.yaml . && esphome run hallway-panel.yaml
+
+substitutions:
+  # ── Display-capture mode ──
+  # "off": this panel carries no screenshot capture (no display_capture engine
+  # include below), so every page module's capture include resolves to the
+  # inert capture/off/<page>.yaml stub — no lvgl_screenshot, no :8080
+  # endpoint, no snapshot codegen.
+  capture_mode: "off"
+
+  # ── Per-panel identity (overrides user-config) ──
+  name: "hallwaypanel"
+  friendly_name: HallwayPanel
+  project_name: "foolycooly.esp32-panel"
+  project_version: "2026.07.11"
+  log_level: INFO
+  freertos_runtime_stats: "n"
+
+  # ── HOME / back target — no media home on this panel ──
+  home_page: room_page
+
+  # ── Tile-grid Room roster (consumed when the page-room card is built) ──
+  room_nav_f: "0"
+  room_nav_p: "0"
+  room_tile_0_entity: light.hallway_lights              # CHANGE
+  room_tile_0_caption: "Hallway"
+  room_tile_0_kind: light
+  room_tile_1_entity: light.hallway_led                 # CHANGE
+  room_tile_1_caption: "LED"
+  room_tile_1_kind: light
+
+  # ── Doors & Windows roster (consumed when the page-doors-windows card is
+  #    built). kind ∈ door|window|motion. Any binary_sensor contact works. ──
+  dw_nav_f: "2"
+  dw_nav_p: "0"
+  dw_contact_0_entity: binary_sensor.front_door_contact     # CHANGE (whole roster)
+  dw_contact_0_caption: "Front Door"
+  dw_contact_0_kind: door
+  dw_contact_1_entity: binary_sensor.patio_door_contact
+  dw_contact_1_caption: "Patio Door"
+  dw_contact_1_kind: door
+  dw_contact_2_entity: binary_sensor.back_door_contact
+  dw_contact_2_caption: "Back Door"
+  dw_contact_2_kind: door
+  dw_contact_3_entity: binary_sensor.garage_door_contact
+  dw_contact_3_caption: "Garage"
+  dw_contact_3_kind: door
+  dw_contact_4_entity: binary_sensor.office_door_contact
+  dw_contact_4_caption: "Office Door"
+  dw_contact_4_kind: door
+  dw_contact_5_entity: binary_sensor.kitchen_window_contact
+  dw_contact_5_caption: "Kitchen Win"
+  dw_contact_5_kind: window
+  dw_contact_6_entity: binary_sensor.bathroom_window_contact
+  dw_contact_6_caption: "Bathroom Win"
+  dw_contact_6_kind: window
+  dw_contact_7_entity: binary_sensor.ensuite_window_contact
+  dw_contact_7_caption: "Ensuite Win"
+  dw_contact_7_kind: window
+  dw_contact_8_entity: binary_sensor.master_bed_window_contact
+  dw_contact_8_caption: "Master Win"
+  dw_contact_8_kind: window
+  dw_contact_9_entity: binary_sensor.utility_window_contact
+  dw_contact_9_caption: "Utility Win"
+  dw_contact_9_kind: window
+  dw_contact_10_entity: binary_sensor.hall_motion
+  dw_contact_10_caption: "Hall Motion"
+  dw_contact_10_kind: motion
+  dw_contact_11_entity: binary_sensor.kitchen_motion
+  dw_contact_11_caption: "Kitchen Motion"
+  dw_contact_11_kind: motion
+  dw_contact_12_entity: binary_sensor.landing_motion
+  dw_contact_12_caption: "Landing Motion"
+  dw_contact_12_kind: motion
+  dw_contact_13_entity: binary_sensor.lounge_motion
+  dw_contact_13_caption: "Lounge Motion"
+  dw_contact_13_kind: motion
+
+  # ── 2D nav contract: F0 Room · F1 Climate · F2 Security ──
+  nav_functions: "3"
+  nav_pages_per_func: "4"
+  nav_npages: "{1, 2, 1}"
+  nav_pages_matrix: >-
+    { id(room_page)->obj },
+    { id(climate_page)->obj, id(hotwater_page)->obj },
+    { id(doors_windows_page)->obj }
+
+packages:
+  # House-wide site bindings — shared with the main panel. Keys overridden in
+  # the substitutions block above win over the ones in user-config.yaml.
+  user_config: !include user-config.yaml
+  hardware: !include
+    file: modules/hardware/p4-86-panel.yaml
+    vars:
+      rotation: "0"
+  foundation: !include modules/ui-foundation.yaml
+  # NO ble_proxy (no Bluetooth) · NO assist (no Voice)
+  ui_shared: !include modules/ui-shared.yaml
+  nav2d: !include modules/nav2d.yaml
+  takeover: !include modules/takeover.yaml
+  top_bar: !include modules/top-bar.yaml
+  # ── Functions ──
+  page_room: !include modules/page-room.yaml                 # F0 P0  (STUB — tile-grid card TBD)
+  page_climate: !include modules/page-climate.yaml           # F1 (climate + hot water, whole-home)
+  page_doors_windows: !include modules/page-doors-windows.yaml # F2 P0  (STUB — contact overview TBD)
+  # ── Chrome-required (not in swipe nav) ──
+  page_energy: !include modules/page-energy.yaml             # battery-pill target
+  page_screensaver: !include modules/page-screensaver.yaml   # idle default → room_page
+  info_screen: !include modules/page-info.yaml  # cog target; capture self-reg inert (no display_capture)

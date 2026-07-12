@@ -1,0 +1,106 @@
+---
+# SDL screenshot tool — renders the UI on desktop and exposes a screenshot HTTP endpoint.
+# Used for AI-assisted development and visual testing without flashing hardware.
+#
+# Usage:
+#   esphome run AI_tools/SDL-lvgl-screenshot.yaml
+#   curl http://localhost:8080/screenshot > screenshot.png
+#
+# Add your own tiles below to preview them in the SDL window.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/agillis/esphome-lvgl-screenshot
+      ref: main
+    components: [lvgl_screenshot]
+
+lvgl_screenshot:
+  port: 8080
+
+substitutions:
+  icon_font:    mdi_icons_40
+  text_font:    nunito_20
+  text_color:   white
+  bg_color:     black
+  button_on_color:  "ep_orange"
+  button_off_color: "very_dark_gray"
+  icon_on_color:    "yellow"
+  icon_off_color:   "gray"
+  label_on_color:   "white"
+  label_off_color:  "gray"
+  button_text_color: "white"
+  display_daytime_brightness:   "100%"
+  display_nighttime_brightness: "50%"
+  display_night_hour:   "0"
+  display_night_minute: "0"
+  display_backlight_timeout_always_enabled: "false"
+  display_backlight_timeout_initial: "5"
+  screen_height: '480'
+  screen_width:  '480'
+
+esphome:
+  name: sdl-screenshot
+  friendly_name: SDL Screenshot
+  on_boot:
+  - priority: 400
+    then:
+    - script.execute: update_loading_page
+
+logger:
+  level: debug
+
+script:
+- id: time_update
+  then:
+  - lambda: |-
+      // No operation
+
+packages:
+  theme:          !include esphome-modular-lvgl-buttons/common/theme/index.yaml
+  # theme:        !include esphome-modular-lvgl-buttons/common/theme/index_debug.yaml  # uncomment for debug outlines
+  sensors:        !include esphome-modular-lvgl-buttons/common/sensors_base_sdl.yaml
+  time:           !include esphome-modular-lvgl-buttons/common/time_homeassistant.yaml
+  hardware:       !include esphome-modular-lvgl-buttons/hardware/SDL-lvgl.yaml
+  loading_screen: !include esphome-modular-lvgl-buttons/pages/loading.yaml
+  info_screen:    !include esphome-modular-lvgl-buttons/pages/info.yaml
+
+  # ── Add tiles here to preview them ───────────────────────────────────────────
+
+  # example_light: !include
+  #   file: esphome-modular-lvgl-buttons/ui/light/remote.yaml
+  #   vars:
+  #     uid: example_light
+  #     entity_id: "light.living_room"
+  #     row: 0
+  #     column: 0
+  #     text: "Living Room"
+  #     icon: $mdi_ceiling_light
+
+lvgl:
+  pages:
+  - id: main_page
+    layout: 4x4
+    styles: page_style
+    <<: !include esphome-modular-lvgl-buttons/common/swipe_navigation.yaml
+
+font:
+- file: 'https://github.com/Templarian/MaterialDesign-Webfont/raw/v7.4.47/fonts/materialdesignicons-webfont.ttf'
+  id: mdi_icons_40
+  size: 40
+  bpp: 8
+  glyphs:
+  # light detail page
+  - $mdi_brightness_6
+  - $mdi_chevron_up
+  - $mdi_circle_opacity
+  - $mdi_eyedropper
+  - $mdi_lightbulb
+  # climate detail page
+  - $mdi_arrow_oscillating
+  - $mdi_chevron_left
+  - $mdi_thermostat
+  - $mdi_water_percent
+  # general
+  - $mdi_information_box
+  - $mdi_ceiling_light

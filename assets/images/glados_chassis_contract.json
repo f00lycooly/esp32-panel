@@ -1,0 +1,52 @@
+{
+  "comment": "Two-piece GLaDOS optic. Place glados_cavity then the LIVE eye then glados_shell in va_head (same origin). The eye TRANSLATES vertically between eye_centre (rest, lowest) and eye_top (highest) \u2014 translate only, no transform layer. Aperture/optic is offset left of the shell centre. No eyelids; no head-tilt poses.",
+  "head_wh": [
+    288,
+    680
+  ],
+  "shell_centre": [
+    144,
+    340
+  ],
+  "aperture": {
+    "cx": 120,
+    "cy": 340,
+    "w": 126,
+    "h": 276,
+    "r": 47
+  },
+  "eye_centre": [
+    120,
+    340
+  ],
+  "eye_top": [
+    120,
+    253
+  ],
+  "eye_slide_px": 87,
+  "bellows": {
+    "top": 212,
+    "bottom": 470
+  },
+  "eye_top_grounded": [
+    120,
+    267
+  ],
+  "eye_slide_grounded_px": 73,
+  "eye_widget_diameters": {
+    "socket": 110,
+    "iris_rim": 94,
+    "iris": 73,
+    "hot": 47,
+    "pupil": 26
+  },
+  "led_offset": [
+    44,
+    29
+  ],
+  "layer_order": [
+    "glados_cavity (back)",
+    "LIVE eye",
+    "glados_shell (front)"
+  ]
+}

@@ -1,0 +1,239 @@
+# spotify_panel.yaml — HA package: Spotify recent/playlists/artists feeds for
+# the panel media pages + alarm music picker (spotify_*_entity in
+# user-config.yaml). Requires the SpotifyPlus integration (HACS).
+# Register in configuration.yaml:
+#   homeassistant:
+#     packages:
+#       spotify_panel: !include spotify_panel.yaml
+# CHANGE: media_player.spotifyplus_myaccount → your SpotifyPlus media_player
+# entity (one per service call below).
+#
+# SpotifyPlus exposes playlists/devices via *services that return response data*,
+# not as static sensors. The panel needs to read them as plain HA entities/attributes, so
+# these trigger-based template sensors call the services on a schedule (+ HA start
+# + a manual `spotify_panel_refresh` event) and republish the results as:
+#   - structured list attributes  (names / uris / ids)  — for templating in HA
+#   - delimited string attributes (*_lines, newline-joined) — easy to split on the
+#     ESPHome side via a lambda.
+#
+# Refresh on demand from Developer Tools → Actions:  event.fire  spotify_panel_refresh
+#
+# MULTI-PANEL: these sensor.spotify_panel_* feeds are
+# currently SINGLETON — one Spotify profile shared by every panel. The ESPHome
+# side now reads them via the spotify_recent/playlists/artists_entity substitutions
+# (composition root), so a second panel that wants its OWN profile/feed overrides
+# those substitutions and this file is copied to a per-panel variant publishing
+# sensor.<slug>_spotify_* from that panel's SpotifyPlus account. Until a panel
+# needs a distinct profile, the shared singleton is intentional.
+# (or just restart HA). If a service call errors (e.g. SpotifyPlus briefly
+# unavailable) the trigger aborts WITHOUT continue_on_error, so the sensor keeps
+# its last good value rather than being wiped to empty.
+#
+# NOTE: ESPHome `homeassistant` text_sensor state is capped at 255
+# chars; 50 playlist URIs (~37 chars each) far exceed that. The ESPHome side will
+# need to page/cap or read a trimmed attribute — handled panel-side.
+# This sensor deliberately holds the FULL list regardless.
+
+template:
+  - trigger:
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        minutes: "/30"
+      - platform: event
+        event_type: spotify_panel_refresh
+    action:
+      - service: spotifyplus.get_playlist_favorites
+        data:
+          entity_id: media_player.spotifyplus_myaccount   # CHANGE
+          limit_total: 50
+          sort_result: true
+        response_variable: pl
+    sensor:
+      - name: "Spotify Panel Playlists"
+        unique_id: spotify_panel_playlists
+        icon: mdi:playlist-music
+        # NB: use item access pl.result['items'] — pl.result.items would resolve to
+        # the dict's .items() METHOD in Jinja, not the "items" key (TypeError on len).
+        state: "{{ (pl.result['items'] if pl.result is defined else []) | count }}"
+        attributes:
+          names: "{{ (pl.result['items'] if pl.result is defined else []) | map(attribute='name') | list }}"
+          uris: "{{ (pl.result['items'] if pl.result is defined else []) | map(attribute='uri') | list }}"
+          names_lines: "{{ (pl.result['items'] if pl.result is defined else []) | map(attribute='name') | join('\n') }}"
+          uris_lines: "{{ (pl.result['items'] if pl.result is defined else []) | map(attribute='uri') | join('\n') }}"
+          # Panel-facing trimmed views: the ESPHome panel
+          # shows a 4×2 grid (8 favourites). ESPHome `homeassistant` text_sensor
+          # state/attributes are capped at 255 chars, so these publish ONLY the
+          # first 8, each name hard-truncated to 24 chars, and the playlist IDs as
+          # BARE base62 (the "spotify:playlist:" prefix is re-added on the panel) —
+          # 8 IDs (~22 chars) + newlines stays comfortably under 255.
+          names_8: >-
+            {{ ((pl.result['items'] if pl.result is defined else [])[:8]
+                | map(attribute='name') | map('truncate', 24, True, '') | list) | join('\n') }}
+          ids_8: >-
+            {{ ((pl.result['items'] if pl.result is defined else [])[:8]
+                | map(attribute='uri') | map('replace', 'spotify:playlist:', '') | list) | join('\n') }}
+          # Pick Music cover grid: playlist cover art as ONE
+          # URL PER ATTRIBUTE. Spotify CDN urls are ~90 chars, so 8 of them blow the
+          # 255-char ESPHome text_sensor attribute cap if joined — each tile gets its
+          # own attribute the panel's online_image.set_url consumes directly (the
+          # esphome side subscribes to attribute: cover_0 … cover_7). image_url is the
+          # SpotifyPlus-resolved largest cover; empty string when the slot is absent.
+          cover_0: "{{ ((pl.result['items'] if pl.result is defined else [])[0:1] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_1: "{{ ((pl.result['items'] if pl.result is defined else [])[1:2] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_2: "{{ ((pl.result['items'] if pl.result is defined else [])[2:3] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_3: "{{ ((pl.result['items'] if pl.result is defined else [])[3:4] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_4: "{{ ((pl.result['items'] if pl.result is defined else [])[4:5] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_5: "{{ ((pl.result['items'] if pl.result is defined else [])[5:6] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_6: "{{ ((pl.result['items'] if pl.result is defined else [])[6:7] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_7: "{{ ((pl.result['items'] if pl.result is defined else [])[7:8] | map(attribute='image_url') | list + [''])[0] }}"
+
+  - trigger:
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: event
+        event_type: spotify_panel_refresh
+    action:
+      - service: spotifyplus.get_player_devices
+        data:
+          entity_id: media_player.spotifyplus_myaccount   # CHANGE
+          refresh: true
+          sort_result: true
+        response_variable: dev
+    sensor:
+      - name: "Spotify Panel Devices"
+        unique_id: spotify_panel_devices
+        icon: mdi:speaker-multiple
+        state: "{{ (dev.result | default([], true)) | count }}"
+        attributes:
+          names: "{{ (dev.result | default([], true)) | map(attribute='name') | list }}"
+          ids: "{{ (dev.result | default([], true)) | map(attribute='id') | list }}"
+          names_lines: "{{ (dev.result | default([], true)) | map(attribute='name') | join('\n') }}"
+          ids_lines: "{{ (dev.result | default([], true)) | map(attribute='id') | join('\n') }}"
+
+  # Browse › Artists sub-view: the panel Browse takeover's
+  # Artists grid is driven from the user's TOP ARTISTS (a stable, readily-available
+  # HA snapshot). Tapping an artist plays the artist context (spotify:artist:…) on
+  # the active room via media_play_uri. Names are newline-joined (names_8, ≤255);
+  # the artist context URIs go in uris_8 (bare? no — kept whole, they fit: 8×~37 +
+  # nl ≈ 304 > 255, so we publish ONLY the bare base62 id in ids_8 and the panel
+  # re-adds "spotify:artist:"). Each circular cover gets its own attribute cover_N
+  # (Spotify CDN urls are long — same per-attribute scheme as the playlist covers).
+  # NOTE (drill-down TODO): the deeper Artist → Albums → Tracks walk needs live
+  # service round-trips (spotifyplus.get_artist_albums / get_album_tracks) which are
+  # NOT static HA state; the panel builds that structure with a marked TODO + the
+  # service-call shape rather than wiring it blind. See page-media.yaml browse_page.
+  - trigger:
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        minutes: "/30"
+      - platform: event
+        event_type: spotify_panel_refresh
+    action:
+      - service: spotifyplus.get_users_top_artists
+        data:
+          entity_id: media_player.spotifyplus_myaccount   # CHANGE
+          limit_total: 8
+          time_range: medium_term
+        response_variable: ar
+    sensor:
+      - name: "Spotify Panel Artists"
+        unique_id: spotify_panel_artists
+        icon: mdi:account-music
+        state: "{{ (ar.result['items'] if ar.result is defined else []) | count }}"
+        attributes:
+          names: "{{ (ar.result['items'] if ar.result is defined else []) | map(attribute='name') | list }}"
+          uris: "{{ (ar.result['items'] if ar.result is defined else []) | map(attribute='uri') | list }}"
+          names_8: >-
+            {{ ((ar.result['items'] if ar.result is defined else [])[:8]
+                | map(attribute='name') | map('truncate', 20, True, '') | list) | join('\n') }}
+          ids_8: >-
+            {{ ((ar.result['items'] if ar.result is defined else [])[:8]
+                | map(attribute='uri') | map('replace', 'spotify:artist:', '') | list) | join('\n') }}
+          cover_0: "{{ ((ar.result['items'] if ar.result is defined else [])[0:1] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_1: "{{ ((ar.result['items'] if ar.result is defined else [])[1:2] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_2: "{{ ((ar.result['items'] if ar.result is defined else [])[2:3] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_3: "{{ ((ar.result['items'] if ar.result is defined else [])[3:4] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_4: "{{ ((ar.result['items'] if ar.result is defined else [])[4:5] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_5: "{{ ((ar.result['items'] if ar.result is defined else [])[5:6] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_6: "{{ ((ar.result['items'] if ar.result is defined else [])[6:7] | map(attribute='image_url') | list + [''])[0] }}"
+          cover_7: "{{ ((ar.result['items'] if ar.result is defined else [])[7:8] | map(attribute='image_url') | list + [''])[0] }}"
+
+  # Recently Played strip: the Now-Playing idle landing shows
+  # the 4 most-recent-played items as a cover strip. SpotifyPlus get_player_recent_tracks
+  # returns play history (newest first) where each item wraps a .track {name, uri,
+  # image_url, artists}. The history repeats the same album back-to-back, so each template
+  # DEDUPS BY ALBUM COVER (ns.idx = indices of the first 4 cover-distinct tracks) so the
+  # 4-tile strip never shows the same cover twice. The dedup is INLINED in every template
+  # (not shared via a `variables` step) — HA native-typed a joined "0,1,2,3" string into a
+  # tuple, breaking .split; an in-render Jinja list is safe. Same per-attribute cover scheme
+  # as the playlist/artist grids (Spotify CDN urls ~90 chars → one per attribute; joining 4
+  # would blow the 255-char ESPHome attribute cap). Panel side (page-main np_idle, follow-up):
+  # online_image.set_url cover_0..3 + optional names_4/artists_4 + media_play_uri spotify:track:<ids_4>.
+  - trigger:
+      - platform: homeassistant
+        event: start
+      - platform: time_pattern
+        minutes: "/5"
+      - platform: event
+        event_type: spotify_panel_refresh
+    action:
+      - service: spotifyplus.get_player_recent_tracks
+        data:
+          entity_id: media_player.spotifyplus_myaccount   # CHANGE
+          limit: 12
+        response_variable: rec
+    sensor:
+      - name: "Spotify Panel Recent"
+        unique_id: spotify_panel_recent
+        icon: mdi:history
+        state: >-
+          {% set items = rec.result['items'] if rec.result is defined else [] %}
+          {% set ns = namespace(seen=[], idx=[]) %}
+          {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+          {{ ns.idx | count }}
+        attributes:
+          # Track names (≤24 chars) and primary artists, newline-joined — panel labels.
+          names_4: >-
+            {% set items = rec.result['items'] if rec.result is defined else [] %}
+            {% set ns = namespace(seen=[], idx=[]) %}
+            {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+            {% set o = namespace(l=[]) %}{% for i in ns.idx %}{% set o.l = o.l + [items[i].track.name | truncate(24, True, '')] %}{% endfor %}
+            {{ o.l | join('\n') }}
+          artists_4: >-
+            {% set items = rec.result['items'] if rec.result is defined else [] %}
+            {% set ns = namespace(seen=[], idx=[]) %}
+            {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+            {% set o = namespace(l=[]) %}{% for i in ns.idx %}{% set o.l = o.l + [(items[i].track.artists | map(attribute='name') | first | default('')) | truncate(24, True, '')] %}{% endfor %}
+            {{ o.l | join('\n') }}
+          # Bare track ids (panel re-adds "spotify:track:") for tap-to-play.
+          ids_4: >-
+            {% set items = rec.result['items'] if rec.result is defined else [] %}
+            {% set ns = namespace(seen=[], idx=[]) %}
+            {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+            {% set o = namespace(l=[]) %}{% for i in ns.idx %}{% set o.l = o.l + [items[i].track.uri | replace('spotify:track:', '')] %}{% endfor %}
+            {{ o.l | join('\n') }}
+          # Per-tile album cover (one URL per attribute). Empty when the slot is absent.
+          cover_0: >-
+            {% set items = rec.result['items'] if rec.result is defined else [] %}
+            {% set ns = namespace(seen=[], idx=[]) %}
+            {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+            {{ items[ns.idx[0]].track.image_url if ns.idx | length > 0 else '' }}
+          cover_1: >-
+            {% set items = rec.result['items'] if rec.result is defined else [] %}
+            {% set ns = namespace(seen=[], idx=[]) %}
+            {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+            {{ items[ns.idx[1]].track.image_url if ns.idx | length > 1 else '' }}
+          cover_2: >-
+            {% set items = rec.result['items'] if rec.result is defined else [] %}
+            {% set ns = namespace(seen=[], idx=[]) %}
+            {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+            {{ items[ns.idx[2]].track.image_url if ns.idx | length > 2 else '' }}
+          cover_3: >-
+            {% set items = rec.result['items'] if rec.result is defined else [] %}
+            {% set ns = namespace(seen=[], idx=[]) %}
+            {% for it in items %}{% if it.track.image_url and it.track.image_url not in ns.seen and ns.idx | length < 4 %}{% set ns.seen = ns.seen + [it.track.image_url] %}{% set ns.idx = ns.idx + [loop.index0] %}{% endif %}{% endfor %}
+            {{ items[ns.idx[3]].track.image_url if ns.idx | length > 3 else '' }}

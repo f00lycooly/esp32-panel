@@ -1,0 +1,758 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# page-vacuum.yaml — robot-vacuum status + control page.
+# Kitchen-only. Status-forward: a colour-coded STATE HERO, an LVGL progress bar
+# (cleaning only), a fault/OK banner, ONE context-aware split-primary control,
+# three content "session" pills, and a 2-pill bottom shell_bar. A top_layer
+# "Choose a clean" modal launches saved Roborock routines.
+#
+# Design (locked 2026-06-29, frontend-design + visual companion):
+#   • Top bar      : global top_layer chrome (HOME/battery), untouched.
+#   • Hero         : robot glyph + STATE word, Portal-coloured (rest=ep_blue,
+#                    active=ep_orange, error=red, idle=grey).
+#   • Progress     : LVGL bar + "% cleaned" — shown only while cleaning/returning.
+#   • Banner       : blue "All systems nominal" OR red fault (roborock fault
+#                    sensors: vacuum_error / dock_dock_error / water_shortage /
+#                    dirty+clean tank / mop+water-box detached).
+#   • Primary      : context split button driven by vac_render —
+#                      docked/idle  → START · <default routine>  + MORE (picker)
+#                      cleaning      → DOCK (return_to_base)      + PAUSE
+#                      paused        → RESUME (vacuum.start)      + DOCK
+#   • Content pills: swap by state —
+#                      cleaning  → Room · Duration · Progress
+#                      docked    → Last clean · Status · Total cleans
+#   • Bottom bar   : 2 wide status pills — Battery(hoover) · Status. (The hoover
+#                    battery lives HERE, not the top bar — that's the home battery.)
+#
+# All UI state is rendered by ONE script (vac_render) reading the HA sensors
+# below; every sensor on_value just re-invokes it (single source of truth).
+# nav coords sit F1·P1 on Kitchen (same function row as Room, page 1).
+# ─────────────────────────────────────────────────────────────────────────────
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_vacuum: !include capture/${capture_mode}/vacuum.yaml
+
+substitutions:
+  vacuum_nav_f: "1"      # example: same function row as Room, page index 1
+  vacuum_nav_p: "1"
+# NOTE: the per-panel vacuum bindings consumed below (vacuum_*_entity,
+# routine_default_*, clean_row_N_*) are defined in user-config.yaml
+# (see user-config.yaml.example, Vacuum section) — this module carries no
+# site defaults. Error/tank sources assume a Roborock-style entity set;
+# rebind to whatever your vacuum integration exposes.
+
+# ── Page-local MDI glyphs (every $mdi_* this file uses is declared here) ──
+font:
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_vac_64
+    size: 64
+    bpp: 4
+    glyphs: [$mdi_robot_vacuum]
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_vac_46
+    size: 46
+    bpp: 4
+    glyphs: [$mdi_play, $mdi_pause, $mdi_home_import_outline, $mdi_dots_horizontal]
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_vac_36
+    size: 36
+    bpp: 4
+    glyphs: [$mdi_shield_check, $mdi_alert_octagon, $mdi_robot_vacuum, $mdi_close,
+             $mdi_home_floor_g, $mdi_vacuum, $mdi_vacuum_outline, $mdi_silverware_fork_knife]
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_vac_30
+    size: 30
+    bpp: 4
+    glyphs: [$mdi_floor_plan, $mdi_timer_outline, $mdi_progress_clock, $mdi_history,
+             $mdi_information_outline, $mdi_counter, $mdi_battery_high, $mdi_battery_medium,
+             $mdi_battery_low]
+
+lvgl:
+  pages:
+    - id: vacuum_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: $vacuum_nav_f, p: $vacuum_nav_p}
+        - script.execute: vac_render
+      widgets:
+        # ── HERO: robot glyph + STATE word ──
+        - label:
+            id: ic_vac_robot
+            clickable: false
+            align: TOP_LEFT
+            x: 44
+            y: 108
+            text: $mdi_robot_vacuum
+            text_font: mdi_vac_64
+            text_color: ep_blue
+        - label:
+            id: lbl_vac_state
+            clickable: false
+            align: TOP_LEFT
+            x: 126
+            y: 116
+            text: "—"
+            text_font: oswald_42
+            text_color: ep_blue
+
+        # ── PROGRESS (cleaning only): bar + "% cleaned" ──
+        - obj:
+            id: vac_prog_wrap
+            hidden: true
+            clickable: false
+            scrollable: false
+            align: TOP_MID
+            x: 0
+            y: 188
+            width: 626
+            height: 28
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 14}
+            widgets:
+              - bar:
+                  id: vac_prog_bar
+                  clickable: false
+                  width: 470
+                  height: 14
+                  min_value: 0
+                  max_value: 100
+                  value: 0
+                  bg_color: gray900
+                  bg_opa: cover
+                  border_width: 1
+                  border_color: 0x2A2F36
+                  radius: 7
+                  indicator:
+                    bg_color: ep_orange
+                    bg_opa: cover
+                    radius: 7
+              - label:
+                  id: lbl_vac_prog
+                  clickable: false
+                  text: "0% cleaned"
+                  text_font: oswald_18
+                  text_color: ep_orange
+
+        # ── BANNER: OK (blue) / FAULT (red) — stacked, one shown by vac_render ──
+        - obj:
+            id: vac_banner_ok
+            clickable: false
+            scrollable: false
+            align: TOP_MID
+            x: 0
+            y: 224
+            width: 626
+            height: 52
+            bg_color: 0x06222A
+            bg_opa: cover
+            radius: 13
+            border_width: 1
+            border_color: 0x0C5266
+            pad_all: 0
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 12}
+            widgets:
+              - label: {clickable: false, text: $mdi_shield_check, text_font: mdi_vac_36, text_color: ep_blue}
+              - label: {clickable: false, text: "All systems nominal", text_font: oswald_20, text_color: ep_blue}
+        - obj:
+            id: vac_banner_fault
+            hidden: true
+            clickable: false
+            scrollable: false
+            align: TOP_MID
+            x: 0
+            y: 224
+            width: 626
+            height: 52
+            bg_color: 0x2A1012
+            bg_opa: cover
+            radius: 13
+            border_width: 1
+            border_color: 0x7A2B2C
+            pad_left: 18
+            pad_right: 18
+            pad_top: 0
+            pad_bottom: 0
+            layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 14}
+            widgets:
+              - label: {clickable: false, text: $mdi_alert_octagon, text_font: mdi_vac_36, text_color: 0xFF4D4F}
+              - obj:
+                  clickable: false
+                  scrollable: false
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 1}
+                  widgets:
+                    - label: {id: lbl_vac_fault_t, clickable: false, text: "FAULT", text_font: oswald_24, text_color: 0xFF9A9B}
+                    - label: {id: lbl_vac_fault_s, clickable: false, text: "", text_font: oswald_14, text_color: 0xC9AAAA}
+
+        # ── CONTEXT PRIMARY: big split button + side button ──
+        - button:
+            id: vac_btn_primary
+            align: TOP_LEFT
+            x: 44
+            y: 296
+            width: 458
+            height: 112
+            radius: 20
+            bg_color: ep_orange
+            border_width: 0
+            pad_all: 0
+            widgets:
+              - obj:
+                  clickable: false
+                  scrollable: false
+                  align: CENTER
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 16}
+                  widgets:
+                    - label: {id: ic_vac_primary, clickable: false, text: $mdi_play, text_font: mdi_vac_46, text_color: 0x1A0C02}
+                    - obj:
+                        clickable: false
+                        scrollable: false
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 1}
+                        widgets:
+                          - label: {id: lbl_vac_prim_small, clickable: false, text: "START", text_font: oswald_14, text_color: 0x3A1A05}
+                          - label: {id: lbl_vac_prim_big, clickable: false, text: "$routine_default_label", text_font: oswald_36, text_color: 0x1A0C02}
+            on_click:
+              - script.execute: vac_primary_action
+        - button:
+            id: vac_btn_side
+            align: TOP_RIGHT
+            x: -52
+            y: 296
+            width: 122
+            height: 112
+            radius: 20
+            bg_color: 0x101820
+            border_width: 1
+            border_color: 0x0C6F88
+            pad_all: 0
+            widgets:
+              - obj:
+                  clickable: false
+                  scrollable: false
+                  align: CENTER
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 4}
+                  widgets:
+                    - label: {id: ic_vac_side, clickable: false, text: $mdi_dots_horizontal, text_font: mdi_vac_46, text_color: ep_blue}
+                    - label: {id: lbl_vac_side, clickable: false, text: "MORE", text_font: oswald_14, text_color: ep_blue}
+            on_click:
+              - script.execute: vac_side_action
+
+        # ── CONTENT PILLS (3, swap by state) ──
+        - obj:
+            id: vac_pills
+            clickable: false
+            scrollable: false
+            align: TOP_MID
+            x: 0
+            y: 436
+            width: 632
+            height: 120
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 14}
+            widgets:
+              - obj:
+                  id: vac_pill_0
+                  clickable: false
+                  scrollable: false
+                  width: 198
+                  height: 116
+                  bg_color: 0x0E141A
+                  bg_opa: cover
+                  radius: 16
+                  border_width: 1
+                  border_color: 0x18313A
+                  pad_all: 0
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 6}
+                  widgets:
+                    - label: {id: ic_vac_p0, clickable: false, text: $mdi_floor_plan, text_font: mdi_vac_30, text_color: ep_blue}
+                    - label: {id: lbl_vac_p0v, clickable: false, text: "—", text_font: oswald_24, text_color: white}
+                    - label: {id: lbl_vac_p0c, clickable: false, text: "ROOM", styles: caption}
+              - obj:
+                  id: vac_pill_1
+                  clickable: false
+                  scrollable: false
+                  width: 198
+                  height: 116
+                  bg_color: 0x0E141A
+                  bg_opa: cover
+                  radius: 16
+                  border_width: 1
+                  border_color: 0x18313A
+                  pad_all: 0
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 6}
+                  widgets:
+                    - label: {id: ic_vac_p1, clickable: false, text: $mdi_timer_outline, text_font: mdi_vac_30, text_color: ep_blue}
+                    - label: {id: lbl_vac_p1v, clickable: false, text: "—", text_font: oswald_24, text_color: white}
+                    - label: {id: lbl_vac_p1c, clickable: false, text: "DURATION", styles: caption}
+              - obj:
+                  id: vac_pill_2
+                  clickable: false
+                  scrollable: false
+                  width: 198
+                  height: 116
+                  bg_color: 0x0E141A
+                  bg_opa: cover
+                  radius: 16
+                  border_width: 1
+                  border_color: 0x18313A
+                  pad_all: 0
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 6}
+                  widgets:
+                    - label: {id: ic_vac_p2, clickable: false, text: $mdi_progress_clock, text_font: mdi_vac_30, text_color: ep_blue}
+                    - label: {id: lbl_vac_p2v, clickable: false, text: "—", text_font: oswald_24, text_color: white}
+                    - label: {id: lbl_vac_p2c, clickable: false, text: "PROGRESS", styles: caption}
+
+        # ── BOTTOM BAR (shell_bar): 2 wide status pills — Battery · Status ──
+        - obj: {clickable: false, styles: shell_divider, align: BOTTOM_MID, y: -72, width: 100%, height: 1}
+        - obj:
+            id: vac_botbar
+            styles: shell_bar
+            clickable: false
+            scrollable: false
+            align: BOTTOM_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  styles: shell_zone
+                  clickable: false
+                  scrollable: false
+                  width: 344
+                  height: $shell_zone_h
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                  widgets:
+                    - label: {id: ic_vac_bb_batt, clickable: false, text: $mdi_battery_high, text_font: mdi_vac_30, text_color: ep_blue}
+                    - label: {id: lbl_vac_bb_batt, clickable: false, text: "—", text_font: oswald_24, text_color: white}
+                    - label: {clickable: false, text: "BATTERY", styles: caption}
+              - obj:
+                  styles: shell_zone
+                  clickable: false
+                  scrollable: false
+                  width: 344
+                  height: $shell_zone_h
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_information_outline, text_font: mdi_vac_30, text_color: ep_blue}
+                    - label: {id: lbl_vac_bb_status, clickable: false, text: "—", text_font: oswald_24, text_color: white}
+                    - label: {clickable: false, text: "STATUS", styles: caption}
+
+  # ── "Choose a clean" picker modal (library popup framework, top_layer) ──
+  top_layer:
+    widgets:
+      - obj:
+          id: vac_clean_modal
+          hidden: true
+          align: center
+          width: 640
+          height: 500
+          bg_color: 0x0C1116
+          bg_opa: cover
+          radius: 24
+          border_width: 1
+          border_color: 0x143744
+          pad_left: 26
+          pad_right: 26
+          pad_top: 22
+          pad_bottom: 22
+          scrollable: false
+          layout: {type: flex, flex_flow: COLUMN, flex_align_main: START, flex_align_cross: CENTER, pad_row: 12}
+          widgets:
+            # header
+            - obj:
+                clickable: false
+                scrollable: false
+                width: 588
+                height: 52
+                bg_opa: TRANSP
+                border_width: 0
+                pad_all: 0
+                widgets:
+                  - label: {clickable: false, align: LEFT_MID, x: 0, text: $mdi_robot_vacuum, text_font: mdi_vac_36, text_color: ep_orange}
+                  - label: {clickable: false, align: LEFT_MID, x: 48, text: "CHOOSE A CLEAN", text_font: oswald_24, text_color: white}
+                  - button:
+                      id: vac_modal_close
+                      align: RIGHT_MID
+                      x: 0
+                      y: 0
+                      width: 52
+                      height: 52
+                      radius: 26
+                      bg_color: 0x13191E
+                      border_width: 1
+                      border_color: 0x20424C
+                      pad_all: 0
+                      widgets:
+                        - label: {clickable: false, align: CENTER, text: $mdi_close, text_font: mdi_vac_36, text_color: ep_blue}
+                      on_click:
+                        - script.execute: popup_close
+            # Full Clean (vacuum.start)
+            - button:
+                id: vac_row_full
+                width: 588
+                height: 82
+                radius: 15
+                bg_color: 0x241405
+                border_width: 1
+                border_color: 0x7A4A1E
+                pad_left: 18
+                pad_right: 18
+                pad_top: 0
+                pad_bottom: 0
+                widgets:
+                  - label: {clickable: false, align: LEFT_MID, x: 0, text: $mdi_home_floor_g, text_font: mdi_vac_36, text_color: ep_orange}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: -12, text: "Full Clean", text_font: oswald_24, text_color: 0xF3C39E}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: 14, text: "Whole home · current settings", text_font: oswald_14, text_color: 0x9A7A58}
+                on_click:
+                  - homeassistant.action: {action: vacuum.start, data: {entity_id: $vacuum_entity}}
+                  - script.execute: popup_close
+            # Routine rows (button.press)
+            - button:
+                id: vac_row_0
+                width: 588
+                height: 78
+                radius: 15
+                bg_color: 0x10171C
+                border_width: 1
+                border_color: 0x0C6F88
+                pad_left: 18
+                pad_right: 18
+                pad_top: 0
+                pad_bottom: 0
+                widgets:
+                  - label: {clickable: false, align: LEFT_MID, x: 0, text: $clean_row_0_glyph, text_font: mdi_vac_36, text_color: ep_blue}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: -11, text: "$clean_row_0_label", text_font: oswald_24, text_color: 0xA6E6F5}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: 13, text: "$clean_row_0_sub", text_font: oswald_14, text_color: 0x7D848D}
+                on_click:
+                  - homeassistant.action: {action: button.press, data: {entity_id: $clean_row_0_entity}}
+                  - script.execute: popup_close
+            - button:
+                id: vac_row_1
+                width: 588
+                height: 78
+                radius: 15
+                bg_color: 0x10171C
+                border_width: 1
+                border_color: 0x18313A
+                pad_left: 18
+                pad_right: 18
+                pad_top: 0
+                pad_bottom: 0
+                widgets:
+                  - label: {clickable: false, align: LEFT_MID, x: 0, text: $clean_row_1_glyph, text_font: mdi_vac_36, text_color: ep_blue}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: -11, text: "$clean_row_1_label", text_font: oswald_24, text_color: white}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: 13, text: "$clean_row_1_sub", text_font: oswald_14, text_color: 0x7D848D}
+                on_click:
+                  - homeassistant.action: {action: button.press, data: {entity_id: $clean_row_1_entity}}
+                  - script.execute: popup_close
+            - button:
+                id: vac_row_2
+                width: 588
+                height: 78
+                radius: 15
+                bg_color: 0x10171C
+                border_width: 1
+                border_color: 0x18313A
+                pad_left: 18
+                pad_right: 18
+                pad_top: 0
+                pad_bottom: 0
+                widgets:
+                  - label: {clickable: false, align: LEFT_MID, x: 0, text: $clean_row_2_glyph, text_font: mdi_vac_36, text_color: ep_blue}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: -11, text: "$clean_row_2_label", text_font: oswald_24, text_color: white}
+                  - label: {clickable: false, align: LEFT_MID, x: 52, y: 13, text: "$clean_row_2_sub", text_font: oswald_14, text_color: 0x7D848D}
+                on_click:
+                  - homeassistant.action: {action: button.press, data: {entity_id: $clean_row_2_entity}}
+                  - script.execute: popup_close
+
+# ── Scripts ──
+script:
+  # Register the modal with the library popup framework (shared scrim / outside-tap
+  # / timeout all close it). popup_close already hides popup_scrim.
+  - id: !extend popup_close
+    then:
+      - lvgl.widget.hide: vac_clean_modal
+
+  # Primary split-button action — branches on the live vacuum state.
+  - id: vac_primary_action
+    then:
+      - if:
+          condition:
+            lambda: 'return id(vac_state_raw).state == "cleaning" || id(vac_state_raw).state == "returning";'
+          then:
+            - homeassistant.action: {action: vacuum.return_to_base, data: {entity_id: $vacuum_entity}}
+          else:
+            - if:
+                condition:
+                  lambda: 'return id(vac_state_raw).state == "paused";'
+                then:
+                  - homeassistant.action: {action: vacuum.start, data: {entity_id: $vacuum_entity}}
+                else:
+                  - homeassistant.action: {action: button.press, data: {entity_id: $routine_default_entity}}
+
+  # Side button action — Pause while cleaning, Dock while paused, else open picker.
+  - id: vac_side_action
+    then:
+      - if:
+          condition:
+            lambda: 'return id(vac_state_raw).state == "cleaning" || id(vac_state_raw).state == "returning";'
+          then:
+            - homeassistant.action: {action: vacuum.pause, data: {entity_id: $vacuum_entity}}
+          else:
+            - if:
+                condition:
+                  lambda: 'return id(vac_state_raw).state == "paused";'
+                then:
+                  - homeassistant.action: {action: vacuum.return_to_base, data: {entity_id: $vacuum_entity}}
+                else:
+                  - lvgl.widget.show: popup_scrim
+                  - lvgl.widget.show: vac_clean_modal
+                  - script.execute: popup_start_timeout
+
+  # Single source of truth: render the whole page from the HA sensors. Every
+  # sensor on_value re-invokes this.
+  - id: vac_render
+    then:
+      - lambda: |-
+          char buf[28];
+          std::string st = id(vac_state_raw).has_state() ? id(vac_state_raw).state : "";
+          bool cleaning = (st == "cleaning" || st == "returning");
+          bool paused   = (st == "paused");
+
+          // ── Hero state word + colour ──
+          const char* word; uint32_t col;
+          if      (st == "cleaning")  { word = "CLEANING";  col = 0xF37320; }
+          else if (st == "returning") { word = "RETURNING"; col = 0xF37320; }
+          else if (st == "paused")    { word = "PAUSED";    col = 0xF37320; }
+          else if (st == "docked")    { word = "DOCKED";    col = 0x01B4DE; }
+          else if (st == "idle")      { word = "IDLE";      col = 0x9E9E9E; }
+          else if (st == "error")     { word = "ERROR";     col = 0xFF4D4F; }
+          else                        { word = "—";    col = 0x9E9E9E; }
+          lv_label_set_text(id(lbl_vac_state), word);
+          lv_obj_set_style_text_color(id(lbl_vac_state), lv_color_hex(col), 0);
+          lv_obj_set_style_text_color(id(ic_vac_robot),  lv_color_hex(col), 0);
+
+          // ── Progress bar (cleaning only) ──
+          if (cleaning) {
+            lv_obj_clear_flag(id(vac_prog_wrap), LV_OBJ_FLAG_HIDDEN);
+            int p = id(vac_progress).has_state() ? (int) id(vac_progress).state : 0;
+            lv_bar_set_value(id(vac_prog_bar), p, LV_ANIM_OFF);
+            snprintf(buf, sizeof(buf), "%d%% cleaned", p);
+            lv_label_set_text(id(lbl_vac_prog), buf);
+          } else {
+            lv_obj_add_flag(id(vac_prog_wrap), LV_OBJ_FLAG_HIDDEN);
+          }
+
+          // ── Context primary + side buttons ──
+          if (cleaning) {
+            lv_obj_set_style_bg_color(id(vac_btn_primary), lv_color_hex(0x01B4DE), 0);
+            lv_label_set_text(id(ic_vac_primary), "$mdi_home_import_outline");
+            lv_obj_set_style_text_color(id(ic_vac_primary), lv_color_hex(0x04222A), 0);
+            lv_label_set_text(id(lbl_vac_prim_small), "RETURN");
+            lv_label_set_text(id(lbl_vac_prim_big),   "DOCK");
+            lv_obj_set_style_text_color(id(lbl_vac_prim_small), lv_color_hex(0x06323D), 0);
+            lv_obj_set_style_text_color(id(lbl_vac_prim_big),   lv_color_hex(0x04222A), 0);
+            lv_obj_set_style_bg_color(id(vac_btn_side), lv_color_hex(0x1C130A), 0);
+            lv_obj_set_style_border_color(id(vac_btn_side), lv_color_hex(0x7A4A1E), 0);
+            lv_label_set_text(id(ic_vac_side), "$mdi_pause");
+            lv_obj_set_style_text_color(id(ic_vac_side), lv_color_hex(0xF37320), 0);
+            lv_label_set_text(id(lbl_vac_side), "PAUSE");
+            lv_obj_set_style_text_color(id(lbl_vac_side), lv_color_hex(0xF37320), 0);
+          } else if (paused) {
+            lv_obj_set_style_bg_color(id(vac_btn_primary), lv_color_hex(0xF37320), 0);
+            lv_label_set_text(id(ic_vac_primary), "$mdi_play");
+            lv_obj_set_style_text_color(id(ic_vac_primary), lv_color_hex(0x1A0C02), 0);
+            lv_label_set_text(id(lbl_vac_prim_small), "CONTINUE");
+            lv_label_set_text(id(lbl_vac_prim_big),   "RESUME");
+            lv_obj_set_style_text_color(id(lbl_vac_prim_small), lv_color_hex(0x3A1A05), 0);
+            lv_obj_set_style_text_color(id(lbl_vac_prim_big),   lv_color_hex(0x1A0C02), 0);
+            lv_obj_set_style_bg_color(id(vac_btn_side), lv_color_hex(0x101820), 0);
+            lv_obj_set_style_border_color(id(vac_btn_side), lv_color_hex(0x0C6F88), 0);
+            lv_label_set_text(id(ic_vac_side), "$mdi_home_import_outline");
+            lv_obj_set_style_text_color(id(ic_vac_side), lv_color_hex(0x01B4DE), 0);
+            lv_label_set_text(id(lbl_vac_side), "DOCK");
+            lv_obj_set_style_text_color(id(lbl_vac_side), lv_color_hex(0x01B4DE), 0);
+          } else {
+            lv_obj_set_style_bg_color(id(vac_btn_primary), lv_color_hex(0xF37320), 0);
+            lv_label_set_text(id(ic_vac_primary), "$mdi_play");
+            lv_obj_set_style_text_color(id(ic_vac_primary), lv_color_hex(0x1A0C02), 0);
+            lv_label_set_text(id(lbl_vac_prim_small), "START");
+            lv_label_set_text(id(lbl_vac_prim_big),   "$routine_default_label");
+            lv_obj_set_style_text_color(id(lbl_vac_prim_small), lv_color_hex(0x3A1A05), 0);
+            lv_obj_set_style_text_color(id(lbl_vac_prim_big),   lv_color_hex(0x1A0C02), 0);
+            lv_obj_set_style_bg_color(id(vac_btn_side), lv_color_hex(0x101820), 0);
+            lv_obj_set_style_border_color(id(vac_btn_side), lv_color_hex(0x0C6F88), 0);
+            lv_label_set_text(id(ic_vac_side), "$mdi_dots_horizontal");
+            lv_obj_set_style_text_color(id(ic_vac_side), lv_color_hex(0x01B4DE), 0);
+            lv_label_set_text(id(lbl_vac_side), "MORE");
+            lv_obj_set_style_text_color(id(lbl_vac_side), lv_color_hex(0x01B4DE), 0);
+          }
+
+          // ── Content pills (swap by state) ──
+          uint32_t pcol = cleaning ? 0xF37320 : 0x01B4DE;
+          int secs = id(vac_duration).has_state() ? (int) id(vac_duration).state : 0;
+          // M:SS below one hour, H:MM above (so 90 min reads 1:30, not 90:00)
+          char dur[12];
+          if (secs >= 3600) snprintf(dur, sizeof(dur), "%d:%02d", secs / 3600, (secs % 3600) / 60);
+          else              snprintf(dur, sizeof(dur), "%d:%02d", secs / 60, secs % 60);
+          if (cleaning || paused) {
+            lv_label_set_text(id(ic_vac_p0), "$mdi_floor_plan");
+            lv_label_set_text(id(lbl_vac_p0c), "ROOM");
+            lv_label_set_text(id(lbl_vac_p0v),
+              (id(vac_room).has_state() && !id(vac_room).state.empty()) ? id(vac_room).state.c_str() : "—");
+            lv_label_set_text(id(ic_vac_p1), "$mdi_timer_outline");
+            lv_label_set_text(id(lbl_vac_p1c), "DURATION");
+            lv_label_set_text(id(lbl_vac_p1v), dur);
+            lv_label_set_text(id(ic_vac_p2), "$mdi_progress_clock");
+            lv_label_set_text(id(lbl_vac_p2c), "PROGRESS");
+            { int p = id(vac_progress).has_state() ? (int) id(vac_progress).state : 0;
+              snprintf(buf, sizeof(buf), "%d%%", p); lv_label_set_text(id(lbl_vac_p2v), buf); }
+          } else {
+            lv_label_set_text(id(ic_vac_p0), "$mdi_history");
+            lv_label_set_text(id(lbl_vac_p0c), "LAST CLEAN");
+            if (secs > 0) lv_label_set_text(id(lbl_vac_p0v), dur);
+            else lv_label_set_text(id(lbl_vac_p0v), "—");
+            lv_label_set_text(id(ic_vac_p1), "$mdi_information_outline");
+            lv_label_set_text(id(lbl_vac_p1c), "STATUS");
+            lv_label_set_text(id(lbl_vac_p1v),
+              (id(vac_status).has_state() && !id(vac_status).state.empty()) ? id(vac_status).state.c_str() : "—");
+            lv_label_set_text(id(ic_vac_p2), "$mdi_counter");
+            lv_label_set_text(id(lbl_vac_p2c), "CLEANS");
+            { int t = id(vac_total).has_state() ? (int) id(vac_total).state : 0;
+              if (t > 0) { snprintf(buf, sizeof(buf), "%d", t); lv_label_set_text(id(lbl_vac_p2v), buf); }
+              else lv_label_set_text(id(lbl_vac_p2v), "—"); }
+          }
+          lv_obj_set_style_text_color(id(ic_vac_p0), lv_color_hex(pcol), 0);
+          lv_obj_set_style_text_color(id(ic_vac_p1), lv_color_hex(pcol), 0);
+          lv_obj_set_style_text_color(id(ic_vac_p2), lv_color_hex(pcol), 0);
+
+          // ── Bottom bar: Battery (hoover) + Status ──
+          { uint32_t bc = 0x9E9E9E; const char* bg = "$mdi_battery_high";  // no state → "—", gray500
+            if (id(vac_batt).has_state() && !std::isnan(id(vac_batt).state)) {
+              int b = (int) id(vac_batt).state;
+              snprintf(buf, sizeof(buf), "%d%%", b); lv_label_set_text(id(lbl_vac_bb_batt), buf);
+              bc = 0x01B4DE;
+              if      (b <= 15) { bc = 0xFF4D4F; bg = "$mdi_battery_low"; }
+              else if (b <= 35) { bc = 0xF37320; bg = "$mdi_battery_medium"; }
+            } else {
+              lv_label_set_text(id(lbl_vac_bb_batt), "—");
+            }
+            lv_label_set_text(id(ic_vac_bb_batt), bg);
+            lv_obj_set_style_text_color(id(ic_vac_bb_batt), lv_color_hex(bc), 0); }
+          lv_label_set_text(id(lbl_vac_bb_status),
+            (id(vac_status).has_state() && !id(vac_status).state.empty()) ? id(vac_status).state.c_str() : "—");
+
+          // ── Fault banner ──
+          const char* fmsg = nullptr; const char* fsub = nullptr;
+          static std::string ferr;
+          if (id(vac_err).has_state()) {
+            std::string e = id(vac_err).state;
+            if (!e.empty() && e != "none" && e != "unknown" && e != "unavailable") { fmsg = "VACUUM ERROR"; ferr = e; fsub = ferr.c_str(); }
+          }
+          if (!fmsg && id(vac_dock_err).has_state()) {
+            std::string e = id(vac_dock_err).state;
+            if (!e.empty() && e != "ok" && e != "unknown" && e != "unavailable") { fmsg = "DOCK ERROR"; ferr = e; fsub = ferr.c_str(); }
+          }
+          if (!fmsg && id(vac_water_short).has_state() && id(vac_water_short).state) { fmsg = "WATER SHORTAGE"; fsub = "Refill the clean-water tank"; }
+          if (!fmsg && id(vac_dirty_full).has_state()  && id(vac_dirty_full).state)  { fmsg = "WASTE TANK FULL"; fsub = "Empty the dirty-water tank"; }
+          if (!fmsg && id(vac_clean_empty).has_state() && id(vac_clean_empty).state) { fmsg = "CLEAN TANK EMPTY"; fsub = "Refill the clean-water tank"; }
+          if (!fmsg && id(vac_mop_att).has_state() && !id(vac_mop_att).state)        { fmsg = "MOP DETACHED"; fsub = "Reattach the mop pad"; }
+          if (!fmsg && id(vac_box_att).has_state() && !id(vac_box_att).state)        { fmsg = "WATER BOX OUT"; fsub = "Reinsert the water box"; }
+          if (fmsg) {
+            lv_label_set_text(id(lbl_vac_fault_t), fmsg);
+            lv_label_set_text(id(lbl_vac_fault_s), fsub ? fsub : "");
+            lv_obj_clear_flag(id(vac_banner_fault), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(vac_banner_ok), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(vac_banner_fault), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(vac_banner_ok), LV_OBJ_FLAG_HIDDEN);
+          }
+
+# ── HA bindings: every on_value re-renders the page (single source of truth) ──
+text_sensor:
+  - platform: homeassistant
+    id: vac_state_raw
+    entity_id: $vacuum_entity
+    on_value: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_status
+    entity_id: $vacuum_status_entity
+    on_value: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_room
+    entity_id: $vacuum_room_entity
+    on_value: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_err
+    entity_id: $vacuum_error_entity
+    on_value: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_dock_err
+    entity_id: $vacuum_dock_error_entity
+    on_value: [{script.execute: vac_render}]
+
+sensor:
+  - platform: homeassistant
+    id: vac_batt
+    entity_id: $vacuum_battery_entity
+    on_value: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_progress
+    entity_id: $vacuum_progress_entity
+    on_value: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_duration
+    entity_id: $vacuum_duration_entity
+    on_value: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_total
+    entity_id: $vacuum_total_entity
+    on_value: [{script.execute: vac_render}]
+
+binary_sensor:
+  - platform: homeassistant
+    id: vac_water_short
+    entity_id: $vacuum_water_shortage_entity
+    on_state: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_dirty_full
+    entity_id: $vacuum_dirty_tank_entity
+    on_state: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_clean_empty
+    entity_id: $vacuum_clean_tank_entity
+    on_state: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_mop_att
+    entity_id: $vacuum_mop_attached_entity
+    on_state: [{script.execute: vac_render}]
+  - platform: homeassistant
+    id: vac_box_att
+    entity_id: $vacuum_box_attached_entity
+    on_state: [{script.execute: vac_render}]

@@ -1,0 +1,57 @@
+---
+sensor:
+  - platform: homeassistant
+    id: current_power_consumption
+    entity_id: sensor.envoy_${envoy_id}_current_power_consumption
+    internal: true
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return fabs(id(current_power_consumption).state) < 9.999;'
+            then:
+              - lvgl.label.update:
+                  id: current_power_consumption_watts
+                  text:
+                    format: "%.0f"
+                    args: [ '(fabs(id(current_power_consumption).state) * 1000)' ]
+              - lvgl.label.update:
+                  id: current_power_consumption_units
+                  text: W
+            else:
+              - lvgl.label.update:
+                  id: current_power_consumption_watts
+                  text:
+                    format: "%.1f"
+                    args: [ 'fabs(id(current_power_consumption).state)' ]
+              - lvgl.label.update:
+                  id: current_power_consumption_units
+                  text: kW
+
+  - platform: homeassistant
+    id: current_power_production
+    entity_id: sensor.envoy_${envoy_id}_current_power_production
+    internal: true
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(current_power_production).state < 9.999;'
+            then:
+              - lvgl.label.update:
+                  id: current_power_production_watts
+                  text:
+                    format: "%.0f"
+                    args: [ '(id(current_power_production).state * 1000)' ]
+              - lvgl.label.update:
+                  id: current_power_production_units
+                  text: W
+            else:
+              - lvgl.label.update:
+                  id: current_power_production_watts
+                  text:
+                    format: "%.1f"
+                    args: [ 'id(current_power_production).state' ]
+              - lvgl.label.update:
+                  id: current_power_production_units
+                  text: kW

@@ -1,0 +1,316 @@
+# Per-panel weather feed: ${weather_forecast_entity} is defined in
+# user-config.yaml (see user-config.yaml.example, Weather section). The data
+# underneath is a template wrapper over weather.forecast_home — see
+# homeassistant/examples/weather_forecast.yaml.
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_screensaver: !include capture/${capture_mode}/screensaver.yaml
+
+# ─────────────────────────────────────────────────────────────────────────────
+# page-screensaver.yaml — "Terminal" clock + weather screensaver.
+# Included as a package by waveshare-p4-86-panel.yaml.
+#
+# Shown by ui-shared.yaml `on_idle` after 45s of inactivity (replaces the old
+# energy-Sankey screensaver; the Sankey is still reachable via the home battery
+# button). The whole page is one full-screen button: any touch wakes to main_page.
+#
+# Aesthetic (design , "Terminal"): a Swiss departure-board — monumental
+# flush-left Oswald clock, a hard cyan rule, tracked-out caps date, and a
+# Today/Tomorrow forecast strip with real MDI weather glyphs.
+#
+# Data: ha_time (clock/date, 1s interval); $weather_forecast_entity
+# (HA glue homeassistant/examples/weather_forecast.yaml) publishes `today` + `tomorrow` as
+# "<condition>|<hi>|<lo>" strings; apply_forecast maps the condition to a glyph +
+# pretty label and fills the cell.
+#
+# Cross-package ids (resolve after merge): main_page (page-main), ha_time
+# (foundation), oswald_* (ui-shared).
+# ─────────────────────────────────────────────────────────────────────────────
+
+font:
+  # Monumental clock numerals — only digits + colon, so the 216px bitmap stays small.
+  - file: 'assets/fonts/Oswald-SemiBold.ttf'
+    id: oswald_clock
+    size: 216
+    bpp: 4
+    glyphs: ["0","1","2","3","4","5","6","7","8","9",":"]
+  # Forecast weather symbols (one per HA condition apply_forecast can emit).
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_weather_96
+    size: 96
+    bpp: 4
+    glyphs:
+      - $mdi_weather_sunny
+      - $mdi_weather_night
+      - $mdi_weather_partly_cloudy
+      - $mdi_weather_cloudy
+      - $mdi_weather_cloudy_alert
+      - $mdi_weather_rainy
+      - $mdi_weather_pouring
+      - $mdi_weather_lightning
+      - $mdi_weather_snowy
+      - $mdi_weather_snowy_rainy
+      - $mdi_weather_fog
+      - $mdi_weather_hail
+      - $mdi_weather_windy
+  # Battery power-flow state glyphs for the top-right pill (larger than the
+  # 28px top-bar set). Same five states as page-main's home_refresh paints.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_batt_44
+    size: 44
+    bpp: 4
+    glyphs:
+      - $mdi_battery_high
+      - $mdi_solar_power
+      - $mdi_transmission_tower_import
+      - $mdi_transmission_tower_export
+      - $mdi_home_lightning_bolt
+
+script:
+  # Paint the clock (+ date, only when it changed). Run by the 1s interval while
+  # the screensaver is the active screen, and once from on_load so the page
+  # never shows a stale/blank clock.
+  - id: ss_paint_clock
+    then:
+      - lambda: |-
+          auto t = id(ha_time).now();
+          if (!t.is_valid()) return;
+          char c[6];  snprintf(c, sizeof(c), "%02d:%02d", t.hour, t.minute);
+          lv_label_set_text(id(ss_clock), c);
+          char d[32]; t.strftime(d, sizeof(d), "%A %e %B %Y");
+          for (char* p = d; *p; ++p) *p = toupper((unsigned char)*p);
+          static std::string last_date;
+          if (last_date != d) {   // date flips at most once a day
+            last_date = d;
+            lv_label_set_text(id(ss_date), d);
+          }
+
+  # Fill one forecast cell (0=Today, 1=Tomorrow) from a "<condition>|<hi>|<lo>"
+  # string: map the HA condition to its MDI weather glyph + a short label, and set
+  # the hi/lo. Unknown conditions fall back to a cloud.
+  - id: apply_forecast
+    parameters:
+      cell: int
+      info: string
+    then:
+      - lambda: |-
+          static lv_obj_t* ic[2] = { id(ss_today_ic), id(ss_tom_ic) };
+          static lv_obj_t* hl[2] = { id(ss_today_hl), id(ss_tom_hl) };
+          static lv_obj_t* cd[2] = { id(ss_today_cd), id(ss_tom_cd) };
+          if (cell < 0 || cell > 1) return;
+          std::string s = info;
+          size_t a = s.find('|');
+          size_t b = (a == std::string::npos) ? std::string::npos : s.find('|', a + 1);
+          if (a == std::string::npos || b == std::string::npos) return;
+          std::string cond = s.substr(0, a);
+          std::string hi = s.substr(a + 1, b - a - 1);
+          std::string lo = s.substr(b + 1);
+          const char* glyph = "$mdi_weather_cloudy";
+          const char* pretty = "Cloudy";
+          if      (cond == "sunny")          { glyph = "$mdi_weather_sunny";          pretty = "Sunny"; }
+          else if (cond == "clear-night")    { glyph = "$mdi_weather_night";          pretty = "Clear"; }
+          else if (cond == "partlycloudy")   { glyph = "$mdi_weather_partly_cloudy";  pretty = "Part cloudy"; }
+          else if (cond == "cloudy")         { glyph = "$mdi_weather_cloudy";         pretty = "Cloudy"; }
+          else if (cond == "rainy")          { glyph = "$mdi_weather_rainy";          pretty = "Rainy"; }
+          else if (cond == "pouring")        { glyph = "$mdi_weather_pouring";        pretty = "Pouring"; }
+          else if (cond == "lightning" ||
+                   cond == "lightning-rainy"){ glyph = "$mdi_weather_lightning";      pretty = "Storms"; }
+          else if (cond == "snowy")          { glyph = "$mdi_weather_snowy";          pretty = "Snow"; }
+          else if (cond == "snowy-rainy")    { glyph = "$mdi_weather_snowy_rainy";    pretty = "Sleet"; }
+          else if (cond == "fog")            { glyph = "$mdi_weather_fog";            pretty = "Fog"; }
+          else if (cond == "hail")           { glyph = "$mdi_weather_hail";           pretty = "Hail"; }
+          else if (cond == "windy" ||
+                   cond == "windy-variant")  { glyph = "$mdi_weather_windy";          pretty = "Windy"; }
+          else if (cond == "exceptional")    { glyph = "$mdi_weather_cloudy_alert";   pretty = "Alert"; }
+          lv_label_set_text(ic[cell], glyph);
+          std::string t = hi + "°/" + lo + "°";
+          lv_label_set_text(hl[cell], t.c_str());
+          lv_label_set_text(cd[cell], pretty);
+
+interval:
+  # Clock + date, updated every second — but only while the screensaver is
+  # actually showing (on_load paints immediately when it appears).
+  - interval: 1s
+    then:
+      - if:
+          condition: {lambda: 'return lv_screen_active() == id(screensaver_page)->obj;'}
+          then:
+            - script.execute: ss_paint_clock
+
+text_sensor:
+  # Forecast feed (HA glue homeassistant/examples/weather_forecast.yaml). Each attribute is a
+  # "<condition>|<hi>|<lo>" string; apply_forecast paints the matching cell.
+  - platform: homeassistant
+    id: ss_today_src
+    entity_id: $weather_forecast_entity
+    attribute: today
+    on_value:
+      - script.execute: {id: apply_forecast, cell: 0, info: !lambda 'return x;'}
+  - platform: homeassistant
+    id: ss_tom_src
+    entity_id: $weather_forecast_entity
+    attribute: tomorrow
+    on_value:
+      - script.execute: {id: apply_forecast, cell: 1, info: !lambda 'return x;'}
+
+lvgl:
+  pages:
+    - id: screensaver_page
+      # skip: excluded from lvgl.page.next/previous so a swipe never lands here.
+      # It is shown only by on_idle (ui-shared.yaml) and dismissed by tap → main.
+      skip: true
+      bg_color: 0x0A0C10
+      # Full-screen page: hide the 2D-nav position dots. They reappear when
+      # the tap-to-wake returns to main_page (its on_load calls nav_arrive).
+      on_load:
+        - script.execute: {id: nav_chrome, x: 0}
+        - script.execute: ss_paint_clock
+      widgets:
+        # Whole page = a tap-to-wake button carrying the vertical gradient.
+        - button:
+            id: ss_root
+            width: 100%
+            height: 100%
+            radius: 0
+            border_width: 0
+            pad_all: 54
+            bg_color: 0x0E1116
+            bg_grad_color: 0x0A0C10
+            bg_grad_dir: VER
+            bg_opa: cover
+            scrollable: false
+            on_press:
+              - lvgl.page.show: $home_page
+            widgets:
+              # Battery power-flow pill (top-LEFT — the old room-label slot;
+              # vacated so the idle GLaDOS cameo from voice-overlay.yaml owns the
+              # top-right corner). Painted by topbar_refresh (modules/top-bar.yaml;
+              # glyph + % + colour by state). Non-clickable so a tap still bubbles to
+              # ss_root and wakes to main_page. Glyph + % sit in an auto-sized
+              # centre-aligned inner box (centre + middle in the pill).
+              - obj:
+                  id: btn_ss_batt
+                  clickable: false
+                  align: TOP_LEFT
+                  x: 0
+                  y: 0
+                  width: 224
+                  height: 84
+                  radius: 42
+                  bg_color: 0x15171C
+                  border_width: 2
+                  border_color: 0x7C828C
+                  pad_all: 0
+                  scrollable: false
+                  widgets:
+                    - obj:
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 12}
+                        widgets:
+                          - label: {id: ic_ss_batt, clickable: false, text: $mdi_battery_high, text_font: mdi_batt_44, text_color: 0x7C828C}
+                          - label: {id: lbl_ss_batt, clickable: false, text: "--%", text_font: oswald_48, text_color: 0x7C828C}
+              # Clock block (clock · cyan rule · date)
+              - obj:
+                  clickable: false
+                  align: TOP_LEFT
+                  x: 0
+                  y: 92
+                  width: 612
+                  height: 304
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: START, flex_align_cross: START, pad_row: 14}
+                  widgets:
+                    - label: {id: ss_clock, clickable: false, text: "--:--", text_font: oswald_clock, text_color: 0xF4F6F8}
+                    - obj:   {id: ss_rule, clickable: false, width: 612, height: 8, bg_color: 0x01B4DE, bg_opa: cover, border_width: 0, radius: 0, pad_all: 0}
+                    - label: {id: ss_date, clickable: false, text: "", text_font: oswald_36, text_color: 0xAEB6C2}
+              # Forecast strip (Today / Tomorrow), pinned to the bottom.
+              - obj:
+                  clickable: false
+                  align: BOTTOM_LEFT
+                  x: 0
+                  y: 0
+                  width: 612
+                  height: 214
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: START, flex_align_cross: START, pad_row: 12}
+                  widgets:
+                    - label: {clickable: false, text: "FORECAST", text_font: oswald_18, text_color: 0x525C6A}
+                    - obj: {clickable: false, width: 612, height: 2, bg_color: 0x20262E, bg_opa: cover, border_width: 0, radius: 0, pad_all: 0}
+                    - obj:
+                        clickable: false
+                        width: 612
+                        height: 150
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 0}
+                        widgets:
+                          # Today
+                          - obj:
+                              clickable: false
+                              width: 300
+                              height: 150
+                              bg_opa: TRANSP
+                              border_width: 0
+                              pad_all: 0
+                              scrollable: false
+                              layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16}
+                              widgets:
+                                - label: {id: ss_today_ic, clickable: false, text: "$mdi_weather_cloudy", text_font: mdi_weather_96, text_color: 0xCFD5DD}
+                                - obj:
+                                    clickable: false
+                                    width: 180
+                                    height: 150
+                                    bg_opa: TRANSP
+                                    border_width: 0
+                                    pad_all: 0
+                                    scrollable: false
+                                    layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 2}
+                                    widgets:
+                                      - label: {clickable: false, text: "TODAY", text_font: oswald_20, text_color: 0x6B7585}
+                                      - label: {id: ss_today_hl, clickable: false, text: "--°/--°", text_font: oswald_48, text_color: 0xE7EAEF}
+                                      - label: {id: ss_today_cd, clickable: false, text: "", text_font: oswald_24, text_color: 0x8B95A3}
+                          # Divider
+                          - obj: {clickable: false, width: 2, height: 120, bg_color: 0x20262E, bg_opa: cover, border_width: 0, radius: 0, pad_all: 0}
+                          # Tomorrow
+                          - obj:
+                              clickable: false
+                              width: 300
+                              height: 150
+                              bg_opa: TRANSP
+                              border_width: 0
+                              pad_all: 0
+                              scrollable: false
+                              layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16}
+                              widgets:
+                                - label: {id: ss_tom_ic, clickable: false, text: "$mdi_weather_partly_cloudy", text_font: mdi_weather_96, text_color: 0x9AA3AF}
+                                - obj:
+                                    clickable: false
+                                    width: 180
+                                    height: 150
+                                    bg_opa: TRANSP
+                                    border_width: 0
+                                    pad_all: 0
+                                    scrollable: false
+                                    layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 2}
+                                    widgets:
+                                      - label: {clickable: false, text: "TOMORROW", text_font: oswald_20, text_color: 0x6B7585}
+                                      - label: {id: ss_tom_hl, clickable: false, text: "--°/--°", text_font: oswald_48, text_color: 0xE7EAEF}
+                                      - label: {id: ss_tom_cd, clickable: false, text: "", text_font: oswald_24, text_color: 0x8B95A3}

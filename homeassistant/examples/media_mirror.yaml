@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-panel active-media mirror — REUSABLE PACKAGE
+# ─────────────────────────────────────────────────────────────────────────────
+# A single, self-contained HA package that gives ONE wall panel its own
+# active-player helper + now-playing mirror. Copy this file once per panel.
+#
+# WHY THIS EXISTS
+#   ESPHome's `homeassistant` text_sensor binds to a FIXED entity_id at compile
+#   time, so it can't follow a runtime device selection. Each panel therefore
+#   needs (a) an input_text holding the entity_id of the media_player its primary
+#   card currently targets, and (b) a template sensor that mirrors whichever
+#   player that helper names into ONE stable entity the panel binds to. HA's
+#   template engine tracks the dynamically-referenced player, so the mirror
+#   re-renders when the selection OR the selected player's attributes change.
+#
+# HOW TO ADD A PANEL
+#   1. Copy this file to  panel_active_media_<slug>.yaml  (e.g. _kitchen.yaml).
+#   2. Replace every  <slug>  with the panel's snake_case id (no spaces) and
+#      every  <Panel Name>  with its human label. Set <default_player> to the
+#      media_player this panel owns (its local room).
+#   3. Register it in configuration.yaml under `homeassistant: packages:` —
+#        homeassistant:
+#          packages:
+#            panel_active_media_<slug>: !include panel_active_media_<slug>.yaml
+#   4. Point the panel's ESPHome device file at the entities it just created:
+#        substitutions:
+#          active_player_helper: input_text.<slug>_active_player
+#          media_mirror_entity:  sensor.<slug>_active_media
+#      (These two substitutions already exist in user-config.yaml / the
+#      composition root.)
+#   5. Reload Template entities + Input Text (or restart HA).
+#
+# The entity_ids derive from the `name:` fields:
+#   input_text "<Panel Name> Active Player" -> input_text.<slug>_active_player
+#   sensor     "<Panel Name> Active Media"  -> sensor.<slug>_active_media
+# Keep `name:` and the `unique_id` slug aligned so the derived ids match the
+# ESPHome substitutions above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+input_text:
+  <slug>_active_player:
+    name: <Panel Name> Active Player
+    initial: <default_player>          # e.g. media_player.living_room
+    max: 80
+    icon: mdi:speaker
+
+template:
+  - sensor:
+      - name: <Panel Name> Active Media
+        unique_id: <slug>_active_media
+        icon: mdi:cast-variant
+        # `tv` (not `playing`) when the target is on an external input (TV / line-in /
+        # x-sonos-htastream) — the panel's np_refresh gates the now-playing hero on
+        # playing/paused, so TV audio never raises it.
+        state: >
+          {% set p = states('input_text.<slug>_active_player') %}
+          {% set st = states(p) if p not in ('unknown','unavailable','') else 'unknown' %}
+          {% set tv = ((state_attr(p,'source') or '')|lower in ['tv','line-in','line in']) or ((state_attr(p,'media_content_id') or '').startswith('x-sonos-htastream')) %}
+          {{ 'tv' if (st == 'playing' and tv) else st }}
+        attributes:
+          target: "{{ states('input_text.<slug>_active_player') }}"
+          device_name: >
+            {% set p = states('input_text.<slug>_active_player') %}
+            {{ state_attr(p, 'friendly_name') | default('', true) }}
+          title: >
+            {% set p = states('input_text.<slug>_active_player') %}
+            {{ state_attr(p, 'media_title') | default('', true) }}
+          artist: >
+            {% set p = states('input_text.<slug>_active_player') %}
+            {{ state_attr(p, 'media_artist') | default('', true) }}
+          entity_picture: >
+            {% set p = states('input_text.<slug>_active_player') %}
+            {{ state_attr(p, 'entity_picture') | default('', true) }}
+          volume: >
+            {% set p = states('input_text.<slug>_active_player') %}
+            {{ state_attr(p, 'volume_level') | default(0, true) }}
+          shuffle: >
+            {% set p = states('input_text.<slug>_active_player') %}
+            {{ 'on' if state_attr(p, 'shuffle') else 'off' }}
+          repeat: >
+            {% set p = states('input_text.<slug>_active_player') %}
+            {{ state_attr(p, 'repeat') | default('off', true) }}

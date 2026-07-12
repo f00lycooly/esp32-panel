@@ -1,0 +1,32 @@
+# ───────────────────────────────────────────────────────────────────────────
+# cover_tile.yaml — album/playlist cover tile
+#
+# One cell of a cover GRID: an `online_image` cover clipped to a rounded tile
+# with the title overlaid bottom-left on a scrim. The caller declares the
+# `online_image` (cover url) and passes it as `src`; lays tiles out by grid cell.
+#
+#   online_image: [{id: cov_0_img, url: !lambda '...', format: PNG, resize: 150x150}]
+#   - button:
+#       <<: !include {file: widgets/cover_tile.yaml, vars: {uid: cov_0,
+#              src: cov_0_img, caption: "Daily Mix 1", col: 0, row: 0}}
+#       on_click: [{script.execute: {id: play_cover, idx: 0}}]
+#
+# ids: ${uid} (tile), img_${uid} (cover), lbl_${uid} (title).
+# vars: uid, src, caption, col, row, caption_font (default oswald_18)
+# ───────────────────────────────────────────────────────────────────────────
+id: ${uid}
+grid_cell_column_pos: ${col}
+grid_cell_row_pos: ${row}
+grid_cell_x_align: STRETCH
+grid_cell_y_align: STRETCH
+radius: 14
+clip_corner: true
+bg_color: gray800
+border_width: 0
+pad_all: 0
+scrollable: false
+widgets:
+  - image: {id: img_$uid, src: $src, align: CENTER, clickable: false}
+  # Bottom scrim so the title stays legible over any cover.
+  - obj: {clickable: false, align: BOTTOM_MID, y: 0, width: 100%, height: 44, radius: 0, bg_color: 0x000000, bg_opa: 60%, border_width: 0, pad_all: 0}
+  - label: {id: lbl_$uid, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "$caption", text_font: $caption_font, text_color: white}

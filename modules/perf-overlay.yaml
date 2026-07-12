@@ -1,0 +1,252 @@
+# ───────────────────────────────────────────────────────────────────────────
+# perf-overlay.yaml — on-screen runtime performance monitor
+#
+# A small, toggleable HUD on the LVGL top_layer that surfaces "what's running
+# hot" without a serial cable: per-core CPU%, LVGL frame rate, main-loop time,
+# free internal heap + largest free block, and free PSRAM. The CPU figure comes
+# from the FreeRTOS idle-task run-time counters (run-time stats enabled in the
+# hardware sdkconfig). It is the measurement baseline the
+# DMA / optimisation work depends on — flip it on, change one
+# thing, read the delta.
+#
+# Design:
+#   • OFF by default (RESTORE_DEFAULT_OFF). The "Perf overlay" diagnostic switch
+#     shows/hides the HUD; while OFF the 1 s interval does no formatting work.
+#   • Metrics come from the battle-tested `debug` component sensors (heap/block/
+#     psram/loop_time) — kept `internal: true` so they don't clutter HA; the HUD
+#     reads their state directly. Flip a sensor to entity_category: diagnostic if
+#     you also want HA history.
+#   • FPS is counted from LVGL itself: a display REFR_READY event callback
+#     (public LVGL v9 API; fires per refresh cycle, so the rate sags under load)
+#     increments a frame counter, divided by the elapsed window each second.
+#     The callback is registered lazily on the first tick
+#     (LVGL is up by then) so this file needs no esphome.on_boot hook.
+#
+# Lives on top_layer alongside voice-overlay.yaml and the page-media modals;
+# ESPHome concatenates top_layer.widgets across packages. Declared AFTER
+# ui_shared in the composition root so oswald_14 resolves.
+#
+# DIAGNOSTIC vs PRODUCTION build:
+#   • PRODUCTION: omit the `perf_overlay: !include modules/perf-overlay.yaml` line
+#     from the composition root AND leave ${freertos_runtime_stats} at its default
+#     "n" (hardware package). The panel then carries no perf HUD, no debug-sensor
+#     interval, and no run-time-stats accounting overhead.
+#   • DIAGNOSTIC: include this package and set ${freertos_runtime_stats}: "y" in the
+#     composition root. Even then the per-second sampler (vTaskGetInfo + CPU/FPS
+#     publish) only runs while the "Perf overlay" switch is ON — OFF is a no-op.
+# ───────────────────────────────────────────────────────────────────────────
+
+# No self-polling: the 1s sampler below calls update() only while the "Perf
+# overlay" switch is ON, so the four debug sensors don't publish to HA every
+# second on a panel whose overlay is off.
+debug:
+  id: perf_debug
+  update_interval: never
+
+sensor:
+  - platform: debug
+    # Exposed as diagnostic (not internal) so DMA/buffer profiling
+    # are measurable remotely without reading the on-screen HUD: free PSRAM
+    # jumping ~1 MB confirms the LVGL draw buffer moved out of PSRAM into
+    # internal SRAM, and loop_time shows the main-loop effect. Diagnostic
+    # entities are hidden from HA dashboards by default.
+    free:
+      name: "Perf free heap"
+      id: perf_free_heap
+      entity_category: diagnostic
+    block:
+      name: "Perf largest free block"
+      id: perf_largest_block
+      entity_category: diagnostic
+    loop_time:
+      name: "Perf loop time"
+      id: perf_loop_time
+      entity_category: diagnostic
+    psram:
+      name: "Perf free PSRAM"
+      id: perf_free_psram
+      entity_category: diagnostic
+
+  # FPS + per-core CPU% are computed in the 1 s sampler below (the debug platform
+  # can't provide them). Published as diagnostic template sensors so the
+  # pm1.x perf campaign is measurable remotely — the on-screen HUD only renders
+  # on top_layer, which the :8080/screenshot endpoint can't capture. Manual
+  # publish (update_interval: never) from the sampler lambda.
+  - platform: template
+    name: "Perf FPS"
+    id: perf_fps
+    entity_category: diagnostic
+    unit_of_measurement: "fps"
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "Perf CPU core 0"
+    id: perf_cpu0
+    entity_category: diagnostic
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: "Perf CPU core 1"
+    id: perf_cpu1
+    entity_category: diagnostic
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: never
+
+globals:
+  # Incremented by the LVGL REFR_FINISH callback; sampled + reset every second.
+  - id: perf_frame_count
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+switch:
+  - platform: template
+    name: "Perf overlay"
+    id: perf_overlay_enable
+    icon: mdi:speedometer
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_on:
+      - lvgl.widget.show: perf_hud
+    on_turn_off:
+      - lvgl.widget.hide: perf_hud
+
+lvgl:
+  top_layer:
+    widgets:
+      # Compact HUD, top-left. Hidden until the switch enables it.
+      - label:
+          id: perf_hud
+          hidden: true
+          align: TOP_LEFT
+          x: 6
+          y: 6
+          text: "perf…"
+          text_font: oswald_14
+          text_color: 0x30D158        # htop-green
+          bg_color: 0x000000
+          bg_opa: 70%
+          pad_all: 6
+          radius: 4
+          # Keep it out of the way of touches meant for the page underneath.
+          clickable: false
+
+# 1 s sampler: lazy-registers the frame counter, then (only while visible)
+# computes FPS and reads the debug sensors into the HUD label.
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          // Windowing state for FPS + per-core CPU%. Declared first so the
+          // diagnostic gate below can reset it on disable (avoids a dt/idle spike
+          // the next time the overlay is switched back on).
+          static uint32_t last_ms = 0;
+          static uint32_t last_idle[2] = {0, 0};
+          static bool cpu_primed = false;
+
+          // Register the LVGL frame-finish counter exactly once (LVGL is
+          // initialised by the time the first interval fires). The counter is a
+          // plain int* passed as user_data so the captureless callback — which
+          // must be convertible to a C function pointer — never touches id().
+          static bool registered = false;
+          if (!registered) {
+            lv_display_t *d = lv_display_get_default();
+            if (d != nullptr) {
+              lv_display_add_event_cb(
+                  d,
+                  [](lv_event_t *e) {
+                    int *c = static_cast<int *>(lv_event_get_user_data(e));
+                    if (c != nullptr) (*c)++;
+                  },
+                  LV_EVENT_REFR_READY,
+                  &id(perf_frame_count));
+              registered = true;
+            }
+          }
+
+          // Diagnostic gate: when the "Perf overlay" switch is OFF (the
+          // default), do NO per-second work — no vTaskGetInfo task inspection, no
+          // CPU/FPS math, no diagnostic publish. Production thus pays nothing for an
+          // included-but-disabled overlay. Reset the windowing state so a later
+          // enable re-primes cleanly. (Run-time stats accounting itself is gated at
+          // build time via ${freertos_runtime_stats} in the hardware sdkconfig.)
+          if (!id(perf_overlay_enable).state) {
+            last_ms = 0; cpu_primed = false; id(perf_frame_count) = 0;
+            return;
+          }
+
+          // Poll the debug component (update_interval: never) only while the
+          // overlay is on — refreshes heap/block/psram/loop_time for the HUD +
+          // the diagnostic publishes below.
+          id(perf_debug).update();
+
+          // FPS over the actual elapsed window (interval jitter aware).
+          uint32_t now = millis();
+          uint32_t dt = (last_ms == 0) ? 1000 : (now - last_ms);
+          float fps = (dt > 0) ? (id(perf_frame_count) * 1000.0f / dt) : 0.0f;
+          id(perf_frame_count) = 0;
+
+          // Per-core CPU utilisation of the two HP application cores (where ESPHome
+          // + LVGL run). Each core's idle-task run-time counter is read via
+          // vTaskGetInfo (needs CONFIG_FREERTOS_USE_TRACE_FACILITY +
+          // GENERATE_RUN_TIME_STATS — both set in the hardware sdkconfig). The
+          // counter ticks in microseconds (RUN_TIME_STATS_USING_ESP_TIMER), so per
+          // core the busy fraction over the window is 1 - idle_us / window_us.
+          // A blended figure hid the truth: ESPHome's main loop busy-spins, pegging
+          // one core ~100% while the other has headroom — the split makes that, and
+          // where the GLaDOS animation can fit, obvious.
+          // NOTE: the P4's LP core (40 MHz ULP) and the ESP32-C6 Wi-Fi/BT
+          // co-processor are separate silicon, invisible to this scheduler — they
+          // cannot be sampled here. C0/C1 are all the schedulable app CPU.
+          float cpu[2] = {-1.0f, -1.0f};
+          float win_us = (float)dt * 1000.0f;
+          for (int core = 0; core < 2; core++) {
+            TaskHandle_t ih = xTaskGetIdleTaskHandleForCore(core);
+            uint32_t idle = 0;
+            if (ih != nullptr) {
+              TaskStatus_t ts;
+              vTaskGetInfo(ih, &ts, pdFALSE, eInvalid);
+              idle = (uint32_t) ts.ulRunTimeCounter;
+            }
+            if (cpu_primed && win_us > 0.0f) {
+              uint32_t d_idle = idle - last_idle[core];  // unsigned: wraps ok
+              float c = 100.0f * (1.0f - (float)d_idle / win_us);
+              if (c < 0.0f) c = 0.0f;
+              if (c > 100.0f) c = 100.0f;
+              cpu[core] = c;
+            }
+            last_idle[core] = idle;
+          }
+          last_ms = now;
+          cpu_primed = true;
+
+          // debug sensors report bytes / milliseconds; NaN before first publish.
+          auto kb = [](float v) { return std::isnan(v) ? 0.0f : v / 1024.0f; };
+          float heap_k  = kb(id(perf_free_heap).state);
+          float block_k = kb(id(perf_largest_block).state);
+          float psram_k = kb(id(perf_free_psram).state);
+          float loop_ms = std::isnan(id(perf_loop_time).state)
+                              ? 0.0f
+                              : id(perf_loop_time).state;
+
+          // Publish to HA (diagnostic) every second — remote, HUD-independent.
+          id(perf_fps).publish_state(fps);
+          if (cpu[0] >= 0.0f) id(perf_cpu0).publish_state(cpu[0]);
+          if (cpu[1] >= 0.0f) id(perf_cpu1).publish_state(cpu[1]);
+
+          // On-screen HUD label (the switch is already known to be ON here).
+          char c0s[6], c1s[6];
+          if (cpu[0] < 0.0f) snprintf(c0s, sizeof(c0s), "--"); else snprintf(c0s, sizeof(c0s), "%.0f", cpu[0]);
+          if (cpu[1] < 0.0f) snprintf(c1s, sizeof(c1s), "--"); else snprintf(c1s, sizeof(c1s), "%.0f", cpu[1]);
+
+          char buf[160];
+          snprintf(buf, sizeof(buf),
+                   "C0 %s%%  C1 %s%%  FPS %.0f\n"
+                   "LOOP %.0fms\n"
+                   "HEAP %.0fk  BLK %.0fk\n"
+                   "PSRAM %.0fk",
+                   c0s, c1s, fps, loop_ms, heap_k, block_k, psram_k);
+          lv_label_set_text(id(perf_hud), buf);

@@ -1,0 +1,8 @@
+lvgl_screenshot:
+  pages:
+    - {name: timer, page: timer_page}
+  modals:
+    # Paused/running timer controls (+1 MIN / RESUME / CANCEL). In-page overlay.
+    - name: timerctrl
+      page: timer_page
+      show: [tmr_ctrl_overlay]

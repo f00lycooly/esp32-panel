@@ -1,0 +1,609 @@
+# swell-spot-body.yaml — one Swelligence spot's NOW-view widget tree (DASHBOARD).
+# Included 3× by page-swelligence.yaml with vars {n: "0"|"1"|"2"} so each spot
+# page gets its own widget ids (sw${n}_*). All values are filled by that spot's
+# homeassistant sensors' on_value (declared in page-swelligence.yaml); this file
+# is pure layout. LVGL 9.6; decorative children clickable:false so swipes pass.
+#
+# ──  SKELETON ─────────────────────────────────────────────────────────
+# This is the cell grid mirroring the Swelligence HA NOW dashboard. Each cell is a fixed-position card so components land in
+# a LOCKED slot. Layout map (720×720, top ~72px reserved for the top-bar
+# singleton — do NOT draw a second clock):
+#
+#   header:  name + water_type ............ TOP_LEFT      | NOW pill TOP_RIGHT
+#   LEFT col  (x14  w262):  compass(.13) / tide(.14) / daylight(.15)
+#   RIGHT col (x286 w420):  sport-pills(.16) / selected-detail(.17) / outlook(.18)
+#   bottom:   condition cells(.19)  then  spot tabs(.20)
+#
+# Bound widget ids that page-swelligence.yaml drives MUST be preserved (else the
+# build breaks): name_lbl, water_lbl, score_arc, score_lbl, verdict_lbl,
+# sport_glyph, sport_lbl, wind_lbl, gust_lbl, tide_lbl, tide_next_lbl,
+# tide_time_lbl, sunset_lbl. They are placed in their destination cells now;
+# empty cells carry a faint title placeholder until their component is implemented.
+# The headline gauge lives interim in the selected-detail cell ( formalises
+# it as the selected-sport gauge).
+#
+# NOTE: block style (not flow `{...}`) is used for every widget carrying ${n} —
+# the braces in ${n} collide with YAML flow-mapping syntax.
+obj:
+  id: sw${n}_root
+  width: 100%
+  height: 100%
+  bg_opa: TRANSP
+  border_width: 0
+  pad_all: 0
+  clickable: false
+  widgets:
+    # ── Header (no clock — top-bar singleton owns it) ──
+    - label:
+        id: sw${n}_name_lbl
+        align: TOP_LEFT
+        x: 18
+        y: 78
+        text: "—"
+        text_font: oswald_36
+        text_color: white
+        clickable: false
+    - label:
+        id: sw${n}_water_lbl
+        align: TOP_LEFT
+        x: 20
+        y: 120
+        text: ""
+        text_font: oswald_14
+        text_color: gray500
+        clickable: false
+    # NOW/WEEK toggle placeholder (real toggle = )
+    - obj:
+        align: TOP_RIGHT
+        x: -16
+        y: 80
+        width: 96
+        height: 40
+        styles: card
+        clickable: false
+        widgets:
+          - label:
+              align: CENTER
+              text: "NOW"
+              text_font: oswald_18
+              text_color: teal
+              clickable: false
+
+    # ════════════ LEFT COLUMN (x14, w262) ════════════
+    # ── compass cell ──
+    - obj:
+        id: sw${n}_cell_compass
+        align: TOP_LEFT
+        x: 14
+        y: 150
+        width: 262
+        height: 172
+        styles: card
+        clickable: false
+        widgets:
+          - label:
+              align: TOP_LEFT
+              text: "WIND"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+          # ── compass: meter ring + line needle ──
+          # scale 0..360, rotation 270 puts 0°=N at top, CW = N→E→S→W (LVGL maps
+          # value→that compass position directly — verified on-device, no offset).
+          # needle value = wind_dir_deg (the FROM bearing), so the needle points at
+          # the source and agrees with the centre cardinal (weathervane convention).
+          - meter:
+              id: sw${n}_wind_meter
+              align: CENTER
+              width: 138
+              height: 138
+              bg_opa: TRANSP
+              border_width: 0
+              pad_all: 0
+              clickable: false
+              scales:
+                - range_from: 0
+                  range_to: 360
+                  angle_range: 360
+                  rotation: 270
+                  ticks:
+                    count: 13
+                    width: 2
+                    length: 7
+                    color: gray700
+                  indicators:
+                    - line:
+                        id: sw${n}_wind_needle
+                        width: 5
+                        color: teal
+                        r_mod: -6
+                        value: 0
+          - label:
+              align: CENTER
+              y: -56
+              text: "N"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+          - label:
+              align: CENTER
+              x: 56
+              text: "E"
+              text_font: oswald_14
+              text_color: gray700
+              clickable: false
+          - label:
+              align: CENTER
+              y: 56
+              text: "S"
+              text_font: oswald_14
+              text_color: gray700
+              clickable: false
+          - label:
+              align: CENTER
+              x: -56
+              text: "W"
+              text_font: oswald_14
+              text_color: gray700
+              clickable: false
+          # centre readout: speed (big) + cardinal + gust
+          - label:
+              id: sw${n}_compass_spd
+              align: CENTER
+              y: -10
+              text: "—"
+              text_font: oswald_36
+              text_color: white
+              clickable: false
+          - label:
+              id: sw${n}_compass_card
+              align: CENTER
+              y: 20
+              text: "kn"
+              text_font: oswald_18
+              text_color: teal
+              clickable: false
+          - label:
+              id: sw${n}_compass_gust
+              align: CENTER
+              y: 42
+              text: ""
+              text_font: oswald_14
+              text_color: ep_orange
+              clickable: false
+
+    # ── tide cell — holds the bound tide labels now ──
+    - obj:
+        id: sw${n}_cell_tide
+        align: TOP_LEFT
+        x: 14
+        y: 330
+        width: 262
+        height: 150
+        styles: card
+        clickable: false
+        widgets:
+          - label:
+              align: TOP_LEFT
+              text: "TIDE"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+          # source badge (honesty: modelled / overlay) — 
+          - label:
+              id: sw${n}_tide_src
+              align: TOP_RIGHT
+              text: ""
+              text_font: oswald_14
+              text_color: gray700
+              clickable: false
+          - label:
+              id: sw${n}_tide_lbl
+              align: TOP_LEFT
+              y: 26
+              text: "—"
+              text_font: oswald_24
+              text_color: white
+              clickable: false
+          - obj:
+              align: TOP_LEFT
+              y: 60
+              width: SIZE_CONTENT
+              height: SIZE_CONTENT
+              bg_opa: TRANSP
+              border_width: 0
+              pad_all: 0
+              layout:
+                type: flex
+                flex_flow: ROW
+                flex_align_cross: CENTER
+              clickable: false
+              widgets:
+                - label:
+                    id: sw${n}_tide_next_lbl
+                    text: ""
+                    text_font: oswald_14
+                    text_color: gray500
+                    clickable: false
+                - label:
+                    id: sw${n}_tide_time_lbl
+                    text: ""
+                    text_font: oswald_14
+                    text_color: gray500
+                    clickable: false
+          # tide sparkline — canvas plotted at runtime from tide_levels CSV.
+          # ESPHome/LVGL9 has no chart widget and canvas.draw_line needs static
+          # points, so the curve is drawn with lv_canvas_set_px in the binding lambda.
+          - canvas:
+              id: sw${n}_tide_canvas
+              align: BOTTOM_MID
+              y: -2
+              width: 232
+              height: 38
+              transparent: true
+              clickable: false
+
+    # ── daylight cell — holds the bound sunset label now ──
+    - obj:
+        id: sw${n}_cell_daylight
+        align: TOP_LEFT
+        x: 14
+        y: 488
+        width: 262
+        height: 104
+        styles: card
+        clickable: false
+        widgets:
+          - label:
+              align: TOP_LEFT
+              text: "DAYLIGHT"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+          # progress arc: elapsed fraction of the daylight window
+          - arc:
+              id: sw${n}_day_arc
+              align: LEFT_MID
+              x: 2
+              y: 8
+              width: 64
+              height: 64
+              arc_width: 7
+              start_angle: 135
+              end_angle: 45
+              min_value: 0
+              max_value: 100
+              value: 0
+              adjustable: false
+              arc_color: 0x23262C
+              arc_rounded: true
+              clickable: false
+              indicator:
+                arc_color: 0xF0A030
+                arc_width: 7
+                arc_rounded: true
+          - label:
+              align: LEFT_MID
+              x: 26
+              y: 8
+              text: $mdi_weather_sunset
+              text_font: mdi_swell_28
+              text_color: ep_orange
+              clickable: false
+          # "Xh Ym" remaining + caption + sunset time
+          - label:
+              id: sw${n}_day_remain
+              align: LEFT_MID
+              x: 84
+              y: -14
+              text: "—"
+              text_font: oswald_24
+              text_color: white
+              clickable: false
+          - label:
+              align: LEFT_MID
+              x: 86
+              y: 8
+              text: "light left"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+          - label:
+              id: sw${n}_sunset_lbl
+              align: LEFT_MID
+              x: 86
+              y: 28
+              text: "—"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+
+    # ════════════ RIGHT COLUMN (x286, w420) ════════════
+    # ── sport-pills cell ──
+    # Pills are GENERATED from swell-manifest.yaml's `sports` list (one per sport)
+    # into generated/swell-spot-pills.yaml; this cell !includes them ONCE, passing
+    # the spot index ${n} down so each spot page gets sw${n}_pill_<sport> ids. Each
+    # pill is hidden until its sensor.swelligence_<slug>_<sport>_suitability entity
+    # publishes (unavailable→stays hidden); ring/score colour = scorer verdict band.
+    # pad_all overrides card's 14 so 4× 64px pills fit the 84px cell; SPACE_EVENLY
+    # spreads them. NEVER hand-edit the included file — edit the manifest + regen.
+    - obj:
+        id: sw${n}_cell_pills
+        align: TOP_LEFT
+        x: 286
+        y: 150
+        width: 420
+        height: 84
+        styles: card
+        pad_all: 8
+        clickable: false
+        layout:
+          type: flex
+          flex_flow: ROW
+          flex_align_main: SPACE_EVENLY
+          flex_align_cross: CENTER
+        widgets: !include {file: generated/swell-spot-pills.yaml, vars: {n: "${n}"}}
+
+    # ── selected-detail cell — interim home of the headline gauge ──
+    - obj:
+        id: sw${n}_cell_detail
+        align: TOP_LEFT
+        x: 286
+        y: 242
+        width: 420
+        height: 150
+        styles: card
+        clickable: false
+        widgets:
+          - label:
+              align: TOP_LEFT
+              text: "SELECTED"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+          - arc:
+              id: sw${n}_score_arc
+              align: LEFT_MID
+              x: 6
+              y: 10
+              width: 112
+              height: 112
+              arc_width: 12
+              start_angle: 135
+              end_angle: 45
+              min_value: 0
+              max_value: 100
+              value: 0
+              adjustable: false
+              arc_color: 0x23262C
+              arc_rounded: true
+              clickable: false
+              indicator:
+                arc_color: 0x4C9FFF
+                arc_width: 12
+                arc_rounded: true
+          - label:
+              id: sw${n}_score_lbl
+              align: LEFT_MID
+              x: 44
+              y: 4
+              text: "--"
+              text_font: oswald_36
+              text_color: white
+              clickable: false
+          - label:
+              id: sw${n}_verdict_lbl
+              align: LEFT_MID
+              x: 140
+              y: -18
+              text: "—"
+              text_font: oswald_24
+              text_color: gray500
+              clickable: false
+          - label:
+              id: sw${n}_sport_glyph
+              align: LEFT_MID
+              x: 142
+              y: 18
+              text: $mdi_kitesurfing
+              text_font: mdi_swell_40
+              text_color: gray500
+              clickable: false
+          - label:
+              id: sw${n}_sport_lbl
+              align: LEFT_MID
+              x: 178
+              y: 18
+              text: ""
+              text_font: oswald_18
+              text_color: gray500
+              clickable: false
+
+    # ── 24h outlook cell ──
+    - obj:
+        id: sw${n}_cell_outlook
+        align: TOP_LEFT
+        x: 286
+        y: 400
+        width: 420
+        height: 90
+        styles: card
+        clickable: false
+        widgets:
+          - label:
+              align: TOP_LEFT
+              text: "NEXT 24H"
+              text_font: oswald_14
+              text_color: gray500
+              clickable: false
+          - label:
+              align: CENTER
+              # Plain Latin-1 placeholder — the U+2581-2587 block glyphs are not
+              # in oswald_14's GF_Latin_Core glyphset (rendered tofu on device).
+              # Real sparkline lands with .
+              text: "outlook · soon"
+              text_font: oswald_14
+              text_color: gray700
+              clickable: false
+
+    # ── condition cells: wind / gust / wave / swell ──
+    # wind + gust carry the bound labels now; wave/swell are placeholders.
+    - obj:
+        align: TOP_LEFT
+        x: 286
+        y: 500
+        width: 420
+        height: 92
+        bg_opa: TRANSP
+        border_width: 0
+        pad_all: 0
+        layout:
+          type: flex
+          flex_flow: ROW
+          flex_align_main: SPACE_BETWEEN
+          flex_align_cross: CENTER
+        clickable: false
+        widgets:
+          - obj:
+              width: 100
+              height: 92
+              styles: card
+              layout:
+                type: flex
+                flex_flow: COLUMN
+                flex_align_main: CENTER
+                flex_align_cross: CENTER
+              clickable: false
+              widgets:
+                - label:
+                    id: sw${n}_wind_lbl
+                    text: "— kn"
+                    text_font: oswald_24
+                    text_color: white
+                    clickable: false
+                - label:
+                    text: "wind"
+                    text_font: oswald_14
+                    text_color: gray500
+                    clickable: false
+          - obj:
+              width: 100
+              height: 92
+              styles: card
+              layout:
+                type: flex
+                flex_flow: COLUMN
+                flex_align_main: CENTER
+                flex_align_cross: CENTER
+              clickable: false
+              widgets:
+                - label:
+                    id: sw${n}_gust_lbl
+                    text: "g —"
+                    text_font: oswald_24
+                    text_color: ep_orange
+                    clickable: false
+                - label:
+                    text: "gust"
+                    text_font: oswald_14
+                    text_color: gray500
+                    clickable: false
+          - obj:
+              width: 100
+              height: 92
+              styles: card
+              layout:
+                type: flex
+                flex_flow: COLUMN
+                flex_align_main: CENTER
+                flex_align_cross: CENTER
+              clickable: false
+              widgets:
+                - label:
+                    id: sw${n}_wave_lbl
+                    text: "—"
+                    text_font: oswald_24
+                    text_color: gray700
+                    clickable: false
+                - label:
+                    text: "wave"
+                    text_font: oswald_14
+                    text_color: gray500
+                    clickable: false
+          - obj:
+              width: 100
+              height: 92
+              styles: card
+              layout:
+                type: flex
+                flex_flow: COLUMN
+                flex_align_main: CENTER
+                flex_align_cross: CENTER
+              clickable: false
+              widgets:
+                - label:
+                    id: sw${n}_swell_lbl
+                    text: "—"
+                    text_font: oswald_24
+                    text_color: gray700
+                    clickable: false
+                - label:
+                    text: "swell"
+                    text_font: oswald_14
+                    text_color: gray500
+                    clickable: false
+
+    # ── spot tabs ── names generated from the manifest slugs
+    #    (${swell_spot_N_name} substitutions, modules/generated/swell-nav.yaml);
+    #    tap-to-switch lands later
+    - obj:
+        align: BOTTOM_MID
+        y: -10
+        width: 692
+        height: 64
+        bg_opa: TRANSP
+        border_width: 0
+        pad_all: 0
+        layout:
+          type: flex
+          flex_flow: ROW
+          flex_align_main: SPACE_BETWEEN
+          flex_align_cross: CENTER
+        clickable: false
+        widgets:
+          - obj:
+              width: 222
+              height: 64
+              styles: card
+              clickable: false
+              widgets:
+                - label:
+                    align: CENTER
+                    text: "${swell_spot_0_name}"
+                    text_font: oswald_18
+                    text_color: gray500
+                    clickable: false
+          - obj:
+              width: 222
+              height: 64
+              styles: card
+              clickable: false
+              widgets:
+                - label:
+                    align: CENTER
+                    text: "${swell_spot_1_name}"
+                    text_font: oswald_18
+                    text_color: gray500
+                    clickable: false
+          - obj:
+              width: 222
+              height: 64
+              styles: card
+              clickable: false
+              widgets:
+                - label:
+                    align: CENTER
+                    text: "${swell_spot_2_name}"
+                    text_font: oswald_18
+                    text_color: gray500
+                    clickable: false

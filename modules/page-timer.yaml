@@ -1,0 +1,699 @@
+# Per-panel timer entity: ${timer_entity} is defined in user-config.yaml (see
+# user-config.yaml.example, Timer section); a second panel overrides it in its
+# composition root (e.g. timer.kitchen).
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_timer: !include capture/${capture_mode}/timer.yaml
+
+# ───────────────────────────────────────────────────────────────────────────
+# page-timer.yaml — TIMER function.
+#
+# F2 P0 = timer_page (the aperture-iris timer); takeover = set_timer_page (the
+# HR:MIN:SEC tumbler). Backed by the HA `$timer_entity` helper (touch +
+# voice share ONE timer via the intent_script bridge in HA configuration.yaml).
+#
+# ── PETAL-IRIS MODEL (.1 + asset contract §4) ──────────────────────────
+# The iris is rendered from pre-rotated PNGs (no runtime transform — P4 PPA
+# limit): a static base (timer_iris_base) + 8 single-blade petals
+# (timer_petal_0..7, lit one-at-a-time CLOCKWISE, seam vertical at top) +
+# a separators plate (timer_iris_seps) + the time centred in the opening.
+# TIMER-assets (.2) emits the petals as full 480×480 canvases with only
+# that blade opaque in neutral white, so TIMER-core stacks
+#   base → petal[0..k] (image_recolor → mode colour) → seps → time-label
+# and lights a DISCRETE 8-step count (k = round(progress * 8)).
+#
+# ── STATES (mockup 05-timer-alarm) ─────────────────────────────────────────
+#   IDLE     blank aperture (base only, no lit petals) + a large centre '+'
+#            (tap → takeover to set_timer_page) + preset chips 1m/2m/5m/10m.
+#   RUNNING  clean iris, N petals lit clockwise (mode colour) + time in the
+#            centre hole. Tap → PAUSE + controls overlay in PORTAL BLUE
+#            (ep_blue #01B4DE): 1 MIN · Resume · Cancel.
+#   PAUSED   the same iris dimmed under the ep_blue controls overlay.
+# Mode colour: DOWN = Portal orange (ep_orange, remaining) — the default.
+# Finish → keeps the existing GLaDOS ring (timer_ringing switch +
+# voice_assistant_phase 20), fired race-free by the last_transition signal.
+#
+#  FOLD (intermittent "no timer entity" on first voice request): root
+# cause is HA-side — see the ROBUSTNESS notes on tmr_sync below and the
+# delta. Firmware side: every state/attribute parse guards unavailable/unknown
+# so the panel never seeds a broken countdown if HA replays late on first use.
+#
+# Cross-package ids (resolve after the package merge): page_style (theme),
+# ep_orange/ep_blue/gray* colours (library common/theme/color.yaml), oswald_*
+# fonts (ui-shared), nav_arrive/nav2d-swipe, takeover_enter/
+# takeover_exit/takeover_back, top-bar singleton,
+# timer_ringing switch + voice_assistant_phase (assist.yaml),
+# tumbler widget (widgets/tumbler.yaml), timer_petal_* / timer_iris_* PNGs
+# (TIMER-assets .2, asset contract §4).
+# ───────────────────────────────────────────────────────────────────────────
+
+image:
+  images:
+    - {id: timer_iris_base, file: 'assets/images/timer_iris_base.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_iris_seps, file: 'assets/images/timer_iris_seps.png', type: RGB565, transparency: alpha_channel}
+    # 8 pre-rotated petals (TIMER-assets .2). White/neutral so they can be
+    # image_recolor'd to the mode colour at runtime. petal 0 leads at the top seam.
+    - {id: timer_petal_0, file: 'assets/images/timer_iris_petal_0.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_petal_1, file: 'assets/images/timer_iris_petal_1.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_petal_2, file: 'assets/images/timer_iris_petal_2.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_petal_3, file: 'assets/images/timer_iris_petal_3.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_petal_4, file: 'assets/images/timer_iris_petal_4.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_petal_5, file: 'assets/images/timer_iris_petal_5.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_petal_6, file: 'assets/images/timer_iris_petal_6.png', type: RGB565, transparency: alpha_channel}
+    - {id: timer_petal_7, file: 'assets/images/timer_iris_petal_7.png', type: RGB565, transparency: alpha_channel}
+
+font:
+  # Page-local MDI glyph block — every $mdi_* used on this page is declared here
+  # (contract §0: don't lean on another page's font). Centre '+' is large.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_timer_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_chevron_left
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_timer_56
+    size: 56
+    bpp: 4
+    glyphs:
+      - $mdi_plus
+      - $mdi_play
+      - $mdi_close
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_timer_plus_lg
+    size: 150
+    bpp: 4
+    glyphs:
+      - $mdi_plus
+
+# Mirror the helper from HA (state + the remaining/duration/last_transition attrs).
+text_sensor:
+  - platform: homeassistant
+    id: tmr_state
+    entity_id: $timer_entity
+    on_value:
+      - script.execute: tmr_sync
+  # remaining/duration are SEPARATE HA subscriptions that land a beat after the
+  # state change, so a tmr_sync fired by tmr_state alone reads stale attributes
+  # → re-sync when each attribute arrives so the value self-corrects.
+  - platform: homeassistant
+    id: tmr_remaining_ha
+    entity_id: $timer_entity
+    attribute: remaining
+    on_value:
+      - script.execute: tmr_sync
+  - platform: homeassistant
+    id: tmr_duration_ha
+    entity_id: $timer_entity
+    attribute: duration
+    on_value:
+      - script.execute: tmr_sync
+  # Authoritative finish signal. HA sets last_transition to "finished" ONLY on
+  # natural expiry. BOOT-REPLAY GUARD: arm on a "started"
+  # transition, ring only on a "finished" seen while armed (then disarm). A boot
+  # replay of "finished" arrives with tmr_armed=false → ignored.
+  - platform: homeassistant
+    id: tmr_last_transition
+    entity_id: $timer_entity
+    attribute: last_transition
+    on_value:
+      - lambda: |-
+          if (x == "started" || x == "restarted") {
+            // Resume after a panel reboot emits "restarted" (verified live), so
+            // arm on both — otherwise a pre-reboot timer never re-arms and its
+            // natural "finished" won't ring.
+            id(tmr_armed) = true;
+          } else if (x == "finished" && id(tmr_armed)) {
+            id(tmr_armed) = false;
+            id(voice_assistant_phase) = 20;          // GLaDOS ring overlay phase
+            id(timer_ringing).turn_on();             // existing finish behaviour
+          }
+
+globals:
+  - {id: tmr_left,  type: int,  restore_value: false, initial_value: "0"}       # local seconds remaining (ticked)
+  - {id: tmr_total, type: int,  restore_value: false, initial_value: "0"}       # configured duration (s)
+  - {id: tmr_armed, type: bool, restore_value: false, initial_value: "false"}   # 76d: armed by a "started" transition; gates the finish ring vs boot replay
+  - {id: tmr_prev_running, type: bool, restore_value: false, initial_value: "false"}
+  # Set-Timer tumbler composition (read by START in set_timer_page).
+  - {id: tmr_set_h, type: int, restore_value: false, initial_value: "0"}
+  - {id: tmr_set_m, type: int, restore_value: false, initial_value: "5"}
+  - {id: tmr_set_s, type: int, restore_value: false, initial_value: "0"}
+
+lvgl:
+  pages:
+    # ═════════════════════ F2 P0 · TIMER IRIS (.1) ═════════════════════
+    - id: timer_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml                  # 2D swipe nav
+      on_load:
+        - script.execute: {id: nav_arrive, f: 2, p: 0}   # TIMER · page 0
+        - script.execute: tmr_draw
+      widgets:
+        # Standard top bar (battery · clock · cog) is the top_layer singleton in
+        # modules/top-bar.yaml. Content stays below y=72.
+
+        # ── IRIS GAUGE (base → 8 petals → seps), centre-aligned ──────────────
+        - image: {id: img_timer_base, src: timer_iris_base, align: CENTER, y: 12, clickable: false}
+        # 8 petal layers (hidden until lit). Recoloured to the mode colour and
+        # shown 0..k clockwise by tmr_draw. Declared base→7 so higher petals
+        # paint on top (irrelevant — each is a disjoint blade).
+        - image: {id: img_timer_petal_0, src: timer_petal_0, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_petal_1, src: timer_petal_1, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_petal_2, src: timer_petal_2, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_petal_3, src: timer_petal_3, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_petal_4, src: timer_petal_4, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_petal_5, src: timer_petal_5, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_petal_6, src: timer_petal_6, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_petal_7, src: timer_petal_7, align: CENTER, y: 12, hidden: true, clickable: false}
+        - image: {id: img_timer_seps, src: timer_iris_seps, align: CENTER, y: 12, clickable: false}
+
+        # ── Centre content: '+' (idle) OR time digits (running) ──────────────
+        # Time digits — dead-centred on the iris opening.
+        - label: {id: lbl_timer_time, clickable: false, align: CENTER, y: 4, text: "0:00", text_font: oswald_72, text_color: ep_orange}
+        - label: {id: lbl_timer_sub, clickable: false, align: CENTER, y: 64, text: "REMAINING", text_font: oswald_18, text_color: gray500}
+        # Large '+' shown only when idle (tap → Set-Timer takeover).
+        - label: {id: lbl_timer_plus, clickable: false, align: CENTER, y: 4, text: $mdi_plus, text_font: mdi_timer_plus_lg, text_color: white, text_opa: 70%}
+        # Idle hint caption just below the '+' (hidden while running/paused).
+        - label: {id: lbl_timer_hint, clickable: false, align: CENTER, y: 104, text: "TAP TO SET", styles: caption}
+
+        # ── Tap capture over the iris (transparent). Idle → Set-Timer takeover;
+        #    running → pause + controls overlay. ──────────────────────────────
+        - button:
+            id: tmr_hit
+            align: CENTER
+            y: 12
+            width: 240
+            height: 240
+            radius: 9999
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            on_click:
+              - script.execute: tmr_tap
+
+        # ── PRESET CHIPS (idle only): 1m · 2m · 5m · 10m ─────────────────────
+        - obj:
+            id: tmr_presets
+            align: BOTTOM_MID
+            x: 0
+            y: -20
+            width: 100%
+            height: 80
+            radius: 0
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 14}
+            widgets:
+              - button:
+                  id: tmr_preset_1
+                  width: 110
+                  height: 64
+                  radius: 16
+                  bg_color: gray900
+                  border_width: 1
+                  border_color: gray700
+                  pad_all: 0
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: "1m", text_font: oswald_24, text_color: gray400}
+                  on_click:
+                    - script.execute: {id: tmr_start_secs, secs: 60}
+              - button:
+                  id: tmr_preset_2
+                  width: 110
+                  height: 64
+                  radius: 16
+                  bg_color: gray900
+                  border_width: 1
+                  border_color: gray700
+                  pad_all: 0
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: "2m", text_font: oswald_24, text_color: gray400}
+                  on_click:
+                    - script.execute: {id: tmr_start_secs, secs: 120}
+              - button:
+                  id: tmr_preset_5
+                  width: 110
+                  height: 64
+                  radius: 16
+                  bg_color: gray900
+                  border_width: 1
+                  border_color: gray700
+                  pad_all: 0
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: "5m", text_font: oswald_24, text_color: gray400}
+                  on_click:
+                    - script.execute: {id: tmr_start_secs, secs: 300}
+              - button:
+                  id: tmr_preset_10
+                  width: 110
+                  height: 64
+                  radius: 16
+                  bg_color: gray900
+                  border_width: 1
+                  border_color: gray700
+                  pad_all: 0
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: "10m", text_font: oswald_24, text_color: gray400}
+                  on_click:
+                    - script.execute: {id: tmr_start_secs, secs: 600}
+
+        # ── PAUSED / RUNNING-TAP controls overlay (PORTAL BLUE) ──────────────
+        # Hidden until a running timer is tapped (→ pause). 1 MIN · Resume · Cancel.
+        - obj:
+            id: tmr_ctrl_overlay
+            hidden: true
+            align: CENTER
+            x: 0
+            y: 0
+            width: 100%
+            height: 100%
+            radius: 0
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            bg_color: 0x08090B
+            bg_opa: 66%
+            # pad_top keeps the button row out of the 72px top-bar band (the bar
+            # is a top_layer singleton that draws over this overlay).
+            pad_top: $shell_content_y
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 22}
+            widgets:
+              # +1 MIN (extend the running/paused timer)
+              - button:
+                  id: tmr_btn_add1
+                  width: 172
+                  height: 172
+                  radius: 24
+                  bg_color: ep_blue
+                  bg_opa: 10%
+                  border_width: 1
+                  border_color: ep_blue
+                  pad_all: 0
+                  scrollable: false
+                  widgets:
+                    - obj:
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_plus, text_font: mdi_timer_56, text_color: ep_blue}
+                          - label: {clickable: false, text: "1 MIN", text_font: oswald_24, text_color: ep_blue}
+                  on_click:
+                    # The overlay only shows while PAUSED (tmr_tap pauses first),
+                    # and HA rejects timer.change on a non-active timer — so
+                    # "+1 MIN" = resume with remaining+60s via timer.start,
+                    # mirroring RESUME (tmr_sync then re-seeds local state).
+                    - homeassistant.action:
+                        action: timer.start
+                        data:
+                          entity_id: $timer_entity
+                          duration: !lambda |-
+                            int s = (id(tmr_left) > 0 ? id(tmr_left) : 0) + 60;
+                            char b[12];
+                            snprintf(b, sizeof(b), "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60);
+                            return std::string(b);
+                    - lvgl.widget.hide: tmr_ctrl_overlay
+              # RESUME (primary)
+              - button:
+                  id: tmr_btn_resume
+                  width: 172
+                  height: 172
+                  radius: 24
+                  bg_color: ep_blue
+                  bg_opa: 24%
+                  border_width: 1
+                  border_color: ep_blue
+                  pad_all: 0
+                  scrollable: false
+                  widgets:
+                    - obj:
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_play, text_font: mdi_timer_56, text_color: ep_blue}
+                          - label: {clickable: false, text: "RESUME", text_font: oswald_24, text_color: ep_blue}
+                  on_click:
+                    - homeassistant.action: {action: timer.start, data: {entity_id: $timer_entity}}
+                    - lvgl.widget.hide: tmr_ctrl_overlay
+              # CANCEL
+              - button:
+                  id: tmr_btn_cancel
+                  width: 172
+                  height: 172
+                  radius: 24
+                  bg_color: ep_blue
+                  bg_opa: 10%
+                  border_width: 1
+                  border_color: ep_blue
+                  pad_all: 0
+                  scrollable: false
+                  widgets:
+                    - obj:
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_close, text_font: mdi_timer_56, text_color: ep_blue}
+                          - label: {clickable: false, text: "CANCEL", text_font: oswald_24, text_color: ep_blue}
+                  on_click:
+                    - homeassistant.action: {action: timer.cancel, data: {entity_id: $timer_entity}}
+                    - lvgl.widget.hide: tmr_ctrl_overlay
+
+    # ═════════════ TAKEOVER · SET TIMER tumbler (.3) ═══════════════════
+    # skip:true — never landed on by a swipe; reached via takeover_enter +
+    # lvgl.page.show from the idle '+'. No nav2d-swipe (swipe suspended). Its
+    # own header chevron calls takeover_exit; the floating one is hidden on enter.
+    - id: set_timer_page
+      skip: true
+      styles: page_style
+      widgets:
+        # ── HEADER (own back chevron · title · spacer) ───────────────────────
+        - obj:
+            id: set_timer_topbar
+            styles: shell_bar
+            align: TOP_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:   # LEFT — back chevron → takeover_exit
+                  styles: shell_zone
+                  width: $shell_side_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - button:
+                        id: set_timer_back
+                        align: CENTER
+                        width: 56
+                        height: 56
+                        radius: 28
+                        bg_color: very_dark_gray
+                        border_width: 0
+                        pad_all: 0
+                        widgets:
+                          - label: {clickable: false, align: CENTER, text: $mdi_chevron_left, text_font: mdi_timer_28, text_color: white}
+                        on_click:
+                          - script.execute: takeover_exit
+              - obj:   # CENTRE — title
+                  styles: shell_zone
+                  width: $shell_centre_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: "Set Timer", styles: header_title}
+              - obj:   # RIGHT — spacer (keeps the title centred)
+                  styles: shell_zone
+                  width: $shell_side_w
+                  height: $shell_zone_h
+                  scrollable: false
+        - obj: {styles: shell_divider, align: TOP_MID, y: $shell_bar_h, width: 100%, height: 1}
+
+        # ── HR : MIN : SEC tumblers (15s SEC steps) ──────────────────────────
+        - obj:
+            id: set_timer_tmbl
+            align: CENTER
+            x: 0
+            y: 8
+            width: 100%
+            height: 360
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 8}
+            widgets:
+              - roller:
+                  <<: !include {file: widgets/tumbler.yaml, vars: {uid: tmr_roll_h, visible_rows: 3, font: oswald_48, width: 150, fg: gray500, sel_bg: ep_orange}}
+                  options: ["00","01","02","03","04","05","06","07","08","09","10","11","12"]
+                  on_value:
+                    - lambda: id(tmr_set_h) = lv_roller_get_selected(id(tmr_roll_h)->obj);
+              - label: {clickable: false, text: ":", text_font: oswald_72, text_color: gray500}
+              - roller:
+                  <<: !include {file: widgets/tumbler.yaml, vars: {uid: tmr_roll_m, visible_rows: 3, font: oswald_48, width: 150, fg: gray500, sel_bg: ep_orange}}
+                  options: ["00","01","02","03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","26","27","28","29","30","31","32","33","34","35","36","37","38","39","40","41","42","43","44","45","46","47","48","49","50","51","52","53","54","55","56","57","58","59"]
+                  on_value:
+                    - lambda: id(tmr_set_m) = lv_roller_get_selected(id(tmr_roll_m)->obj);
+              - label: {clickable: false, text: ":", text_font: oswald_72, text_color: gray500}
+              - roller:
+                  <<: !include {file: widgets/tumbler.yaml, vars: {uid: tmr_roll_s, visible_rows: 3, font: oswald_48, width: 150, fg: gray500, sel_bg: ep_orange}}
+                  options: ["00","15","30","45"]              # SEC in 15s steps
+                  on_value:
+                    - lambda: id(tmr_set_s) = lv_roller_get_selected(id(tmr_roll_s)->obj) * 15;
+        # Column captions (decorative).
+        - obj:
+            align: CENTER
+            x: 0
+            y: 196
+            width: 100%
+            height: 24
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 90}
+            widgets:
+              - label: {clickable: false, text: "HR",  text_font: oswald_18, text_color: gray500}
+              - label: {clickable: false, text: "MIN", text_font: oswald_18, text_color: gray500}
+              - label: {clickable: false, text: "SEC", text_font: oswald_18, text_color: gray500}
+
+        # ── START → compose duration, timer.start, exit back to timer_page ───
+        - button:
+            id: set_timer_start
+            align: BOTTOM_MID
+            x: 0
+            y: -28
+            width: 280
+            height: 84
+            radius: 20
+            bg_color: ep_orange
+            bg_opa: 18%
+            border_width: 1
+            border_color: ep_orange
+            pad_all: 0
+            scrollable: false
+            widgets:
+              - obj:
+                  align: CENTER
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 14}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_play, text_font: mdi_timer_56, text_color: ep_orange}
+                    - label: {clickable: false, text: "START", text_font: oswald_36, text_color: ep_orange}
+            on_click:
+              - script.execute: tmr_start_set
+
+script:
+  # ── Re-sync local countdown from the helper on every HA state change. ──────
+  #  ROBUSTNESS: guard against "unavailable"/"unknown"/empty attribute
+  # replays on first use so a late HA push never seeds a broken countdown.
+  - id: tmr_sync
+    then:
+      - lambda: |-
+          auto parse = [](const std::string &s) -> int {
+            if (s.empty() || s == "unavailable" || s == "unknown" || s == "None") return 0;
+            int h = 0, m = 0, c = 0;
+            if (sscanf(s.c_str(), "%d:%d:%d", &h, &m, &c) < 3) return 0;
+            return h * 3600 + m * 60 + c;
+          };
+          std::string st = id(tmr_state).state;
+          if (st.empty() || st == "unavailable" || st == "unknown") return;   // ignore boot/late replays
+          int dur = parse(id(tmr_duration_ha).state);
+          int rem = parse(id(tmr_remaining_ha).state);
+          if (st == "active")      { id(tmr_left) = rem > 0 ? rem : dur; id(tmr_total) = dur > 0 ? dur : id(tmr_left); }
+          else if (st == "paused") { id(tmr_left) = rem;                 id(tmr_total) = dur > 0 ? dur : rem; }
+          // Leaving paused/active → hide the controls overlay.
+          if (st != "paused" && st != "active")
+            lv_obj_add_flag(id(tmr_ctrl_overlay), LV_OBJ_FLAG_HIDDEN);
+      - script.execute: tmr_draw
+
+  # ── Paint the iris (petals + digits) for the current state/mode. ──────────
+  - id: tmr_draw
+    then:
+      - lambda: |-
+          const std::string st = id(tmr_state).state;
+          const bool idle = (st != "active" && st != "paused");
+          // Mode colour (DOWN/remaining = orange; the only mode in the rebuild).
+          lv_color_t col = lv_color_hex(0xF37320);   // ep_orange
+
+          // ── IDLE: blank aperture + big '+' + presets; no lit petals, no time.
+          if (idle) {
+            for (int i = 0; i < 8; i++) {
+              lv_obj_t* p = nullptr;
+              switch (i) {
+                case 0: p = id(img_timer_petal_0); break; case 1: p = id(img_timer_petal_1); break;
+                case 2: p = id(img_timer_petal_2); break; case 3: p = id(img_timer_petal_3); break;
+                case 4: p = id(img_timer_petal_4); break; case 5: p = id(img_timer_petal_5); break;
+                case 6: p = id(img_timer_petal_6); break; case 7: p = id(img_timer_petal_7); break;
+              }
+              lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
+            }
+            lv_obj_clear_flag(id(lbl_timer_plus), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(lbl_timer_hint), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(lbl_timer_time), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(lbl_timer_sub),  LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(tmr_presets),  LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+
+          // ── RUNNING/PAUSED: hide '+'/presets, show time, light N petals. ──
+          lv_obj_add_flag(id(lbl_timer_plus), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(lbl_timer_hint), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(tmr_presets),    LV_OBJ_FLAG_HIDDEN);
+          lv_obj_clear_flag(id(lbl_timer_time), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_clear_flag(id(lbl_timer_sub),  LV_OBJ_FLAG_HIDDEN);
+
+          int total = id(tmr_total) > 0 ? id(tmr_total) : (id(tmr_left) > 0 ? id(tmr_left) : 1);
+          int left  = id(tmr_left) < 0 ? 0 : id(tmr_left);
+          // Discrete 8-step fill: petals lit = remaining fraction rounded to 8.
+          float frac = total > 0 ? (float)left / (float)total : 0.0f;
+          if (frac < 0.0f) frac = 0.0f; if (frac > 1.0f) frac = 1.0f;
+          int lit = (int)(frac * 8.0f + 0.5f);
+          if (left > 0 && lit < 1) lit = 1;          // keep ≥1 petal while time remains
+          if (lit > 8) lit = 8;
+
+          for (int i = 0; i < 8; i++) {
+            lv_obj_t* p = nullptr;
+            switch (i) {
+              case 0: p = id(img_timer_petal_0); break; case 1: p = id(img_timer_petal_1); break;
+              case 2: p = id(img_timer_petal_2); break; case 3: p = id(img_timer_petal_3); break;
+              case 4: p = id(img_timer_petal_4); break; case 5: p = id(img_timer_petal_5); break;
+              case 6: p = id(img_timer_petal_6); break; case 7: p = id(img_timer_petal_7); break;
+            }
+            if (i < lit) {
+              lv_obj_set_style_image_recolor(p, col, 0);
+              lv_obj_set_style_image_recolor_opa(p, LV_OPA_COVER, 0);
+              lv_obj_clear_flag(p, LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
+            }
+          }
+
+          lv_obj_set_style_text_color(id(lbl_timer_time), col, 0);
+          char tb[12];
+          if (left >= 3600) snprintf(tb, sizeof(tb), "%d:%02d:%02d", left / 3600, (left % 3600) / 60, left % 60);
+          else              snprintf(tb, sizeof(tb), "%d:%02d", left / 60, left % 60);
+          lv_label_set_text(id(lbl_timer_time), tb);
+          lv_label_set_text(id(lbl_timer_sub), (st == "paused") ? "PAUSED" : "REMAINING");
+
+  # ── Tap on the iris: idle → Set-Timer takeover; running → pause + overlay. ─
+  - id: tmr_tap
+    then:
+      - if:
+          condition: {lambda: 'return id(tmr_state).state == "active";'}
+          then:
+            - homeassistant.action: {action: timer.pause, data: {entity_id: $timer_entity}}
+            - lvgl.widget.show: tmr_ctrl_overlay
+      - if:
+          condition: {lambda: 'return id(tmr_state).state == "paused";'}
+          then:
+            - lvgl.widget.show: tmr_ctrl_overlay
+      - if:
+          condition: {lambda: 'return id(tmr_state).state != "active" && id(tmr_state).state != "paused";'}
+          then:
+            # IDLE → open the Set-Timer tumbler takeover (swipe suspended).
+            - lambda: |-
+                id(tmr_set_h) = 0; id(tmr_set_m) = 5; id(tmr_set_s) = 0;
+            - script.execute: takeover_enter
+            - lvgl.widget.hide: takeover_back          # own header chevron instead
+            - lvgl.roller.update: {id: tmr_roll_h, selected_index: 0}
+            - lvgl.roller.update: {id: tmr_roll_m, selected_index: 5}
+            - lvgl.roller.update: {id: tmr_roll_s, selected_index: 0}
+            - lvgl.page.show: set_timer_page
+
+  # ── Start a timer for a fixed number of seconds (preset chips). ───────────
+  - id: tmr_start_secs
+    parameters:
+      secs: int
+    then:
+      - homeassistant.action:
+          action: timer.start
+          data:
+            entity_id: $timer_entity
+            duration: !lambda |-
+              int s = secs; char b[12];
+              snprintf(b, sizeof(b), "%d:%02d:%02d", s / 3600, (s % 3600) / 60, s % 60);
+              return std::string(b);
+
+  # ── START on the tumbler: compose HR:MIN:SEC → timer.start → exit. ────────
+  - id: tmr_start_set
+    then:
+      - if:
+          # Guard a zero duration (don't start an empty timer).
+          condition: {lambda: 'return (id(tmr_set_h) * 3600 + id(tmr_set_m) * 60 + id(tmr_set_s)) > 0;'}
+          then:
+            - homeassistant.action:
+                action: timer.start
+                data:
+                  entity_id: $timer_entity
+                  duration: !lambda |-
+                    char b[12];
+                    snprintf(b, sizeof(b), "%d:%02d:%02d", id(tmr_set_h), id(tmr_set_m), id(tmr_set_s));
+                    return std::string(b);
+            - script.execute: takeover_exit            # back to timer_page (now RUNNING)
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          const std::string st = id(tmr_state).state;
+          const bool running = (st == "active");
+          if (running && id(tmr_left) > 0) {
+            id(tmr_left)--;   // smooth local countdown; the alarm is fired by the
+                              // tmr_last_transition "finished" signal (race-free).
+          }
+      - if:   # surface the page when a timer starts
+          condition:
+            # Gate on the POSITIVE running set (active/paused), NOT "!= idle":
+            # on boot/HA-reconnect tmr_state is "" until the first push, and
+            # "" != "idle" would yank us onto timer_page with no timer running.
+            lambda: 'return (id(tmr_state).state == "active" || id(tmr_state).state == "paused") && !id(tmr_prev_running);'
+          then:
+            - lvgl.page.show: timer_page
+      - if:   # last timer cleared → back home (only if sitting on the timer page)
+          condition:
+            lambda: 'return id(tmr_state).state == "idle" && id(tmr_prev_running) && lv_screen_active() == id(timer_page)->obj;'
+          then:
+            - lvgl.page.show: $home_page
+      - lambda: id(tmr_prev_running) = (id(tmr_state).state == "active" || id(tmr_state).state == "paused");
+      - if:   # keep the running iris ticking (only while the timer page is showing;
+              # on_load re-runs tmr_draw when the page comes back)
+          condition: {lambda: 'return id(tmr_state).state == "active" && lv_screen_active() == id(timer_page)->obj;'}
+          then:
+            - script.execute: tmr_draw

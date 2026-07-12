@@ -1,0 +1,64 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# SNTP TIME (standalone alternative to backlight_time.yaml)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Use this file instead of backlight_time.yaml + time_homeassistant.yaml when
+# the device does NOT have a Home Assistant connection (standalone NTP time).
+#
+# This file includes its own sun: component and brightness_mode scheduling.
+# Do NOT combine with backlight_time.yaml — they share sun: and brightness_mode
+# definitions and will conflict.
+#
+# Required substitutions:
+#   display_night_hour: "0"     # Hour for night mode (0-23)
+#   display_night_minute: "0"   # Minute for night mode (0-59)
+#   display_day_hour: "7"       # Hour for day/evening mode (0-23)
+#   display_day_minute: "0"     # Minute for day/evening mode (0-59)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+sun:
+  latitude: !secret latitude
+  longitude: !secret longitude
+  on_sunset:
+    - elevation: -3.5°
+      then:
+        - select.set:
+            id: brightness_mode
+            option: "Evening"
+  on_sunrise:
+    - then:
+        - select.set:
+            id: brightness_mode
+            option: "Day"
+
+time:
+  - platform: sntp
+    id: system_time
+    update_interval: 360min   # Change sync interval from default 5min to 6 hours
+    on_time_sync:
+      - if:  # Updates the last restart time
+          condition:
+            lambda: 'return id(device_last_restart).state == "";'
+          then:
+            - text_sensor.template.publish:
+                id: device_last_restart
+                state: !lambda 'return id(system_time).now().strftime("%a %d %b %Y - %I:%M:%S %p");'
+    on_time:
+      - seconds: 0
+        minutes: $display_night_minute
+        hours: $display_night_hour
+        then:
+          - select.set:
+              id: brightness_mode
+              option: "Night"
+      - seconds: 0
+        minutes: $display_day_minute
+        hours: $display_day_hour
+        then:
+          - select.set:
+              id: brightness_mode
+              option: "Evening"
+      - minutes: '*'
+        seconds: 0
+        then:
+          - script.execute: time_update

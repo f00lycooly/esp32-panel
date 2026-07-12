@@ -1,0 +1,1797 @@
+# ───────────────────────────────────────────────────────────────────────────
+# page-alarm.yaml — Alarm function · F2 page-1 + edit/sub takeovers + ringing
+# overlay. NEW module file; orchestrator adds
+# `page_alarm: !include modules/page-alarm.yaml` after page_timer.
+#
+# Net-new HA-backed alarms (NOT panel-local). The HA backend (.4) exposes a
+# DYNAMIC roster via sensor.scheduled_alarms — flat pipe-delimited rows a0..a5
+# (sorted by time) plus a `next` attribute — not a fixed set of N input_* slots.
+# This panel READS that sensor (see the text_sensor block below) and WRITES alarms
+# via service calls (input_text/number/boolean/datetime.* on the backend helpers).
+# The scheduled_alarms sensor may be unavailable until the HA backend is deployed —
+# rows then read empty (by design, not a wiring error).
+#
+# Pages this file contributes:
+#   • alarm_page        — F2 P1 swipe page: next-alarm hero + up to 4 fitted rows
+#                         (al_a0..a3) painted from the dynamic roster + Add
+#                         affordance. "elsewhere" rows (speaker not the local room
+#                         group) shown muted. Paginating >4 alarms is .
+#   • alarm_edit_page   — takeover (skip:true): ONE page editing the selected slot —
+#                         HH:MM steppers + 7 day chips + 3 CTAs (Speaker / Music /
+#                         Who) + enable toggle + Save. No free text (names via voice).
+#   • alarm_speaker_page— takeover: Sonos picker (room rows) + WAKE VOLUME slider.
+#   • alarm_music_page  — takeover: SpotifyPlus playlist cover grid + Default Sound.
+#   • alarm_who_page    — takeover: person photos (person.* entity_picture).
+# Plus a top_layer `alarm_ringing_overlay` shown over ANY page when
+# input_text.alarm_ringing is non-empty (Snooze / Dismiss write back to HA).
+#
+# Framework: nav2d (nav_arrive/nav_go), takeover (takeover_enter/exit), ui-shared
+# constants/styles/fonts, widgets/{stepper,chip,room_row,cover_tile,person_photo}.
+# Panel room of this device = the local room (the "elsewhere/muted" anchor) → the
+# $alarm_room_player substitution; verify its entity_id against live HA.
+# ───────────────────────────────────────────────────────────────────────────
+
+# Panel-specific alarm roster (alarm_room_player, alarm_local_label, the six
+# alarm_row_*_slug/_label/_glyph rows) is supplied by the composition root
+# (waveshare-p4-86-panel.yaml) so this shared module is
+# reusable unchanged. Row slugs are sourced from the media roster there, so the
+# media and alarm rosters cannot drift. This file only CONSUMES those vars.
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_alarm: !include capture/${capture_mode}/alarm.yaml
+
+# Page-local MDI glyphs. Every $mdi_* this file uses is declared here (contract §0).
+font:
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_alarm_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_plus
+      - $mdi_chevron_left
+      - $mdi_chevron_right
+      - $mdi_chevron_up
+      - $mdi_chevron_down
+      - $mdi_check
+      - $mdi_check_circle
+      - $mdi_circle_outline
+      - $mdi_close
+      - $mdi_music
+      - $mdi_bell
+      - $mdi_bell_ring
+      - $mdi_alarm_snooze
+      - $mdi_account
+      - $mdi_account_multiple
+      # Roster room glyph superset (alarm_row_*_glyph across all panel rosters).
+      # If your user-config roster uses a glyph not listed here, ADD it (fonts
+      # rasterise only listed glyphs; an unlisted one renders as a blank box).
+      - $mdi_sofa
+      - $mdi_fridge
+      - $mdi_desk
+      - $mdi_bed
+      - $mdi_garage
+      - $mdi_silverware_fork_knife
+  # Bigger glyph for the CTA badges + ringing snooze/dismiss buttons.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_alarm_40
+    size: 40
+    bpp: 4
+    glyphs:
+      - $mdi_music
+      - $mdi_account
+      - $mdi_bell_ring
+      - $mdi_alarm_snooze
+      - $mdi_check
+      # Roster room glyph superset — the SPEAKER CTA badge is repainted by
+      # al_edit_refresh with the selected room's glyph (alarm_row_*_glyph).
+      - $mdi_sofa
+      - $mdi_fridge
+      - $mdi_desk
+      - $mdi_bed
+      - $mdi_garage
+
+globals:
+  # ── Working copy of the slot under edit (so we can Cancel without writing) ──
+  - {id: al_e_hour,    type: int,  restore_value: false, initial_value: "7"}
+  - {id: al_e_min,     type: int,  restore_value: false, initial_value: "0"}
+  - {id: al_e_enabled, type: bool, restore_value: false, initial_value: "true"}
+  # Day mask Mon=bit0 .. Sun=bit6 (matches the CSV scheme Mon=0..Sun=6).
+  - {id: al_e_days,    type: int,  restore_value: false, initial_value: "127"}  # day mask (used only when al_e_repeat)
+  # Repeat OFF (default) = one-off alarm (saved with empty days; fires once at the
+  # next occurrence of its time, then self-disables). Repeat ON = recurring on the
+  # selected day chips.
+  - {id: al_e_repeat,  type: bool, restore_value: false, initial_value: "false"}
+  - {id: al_e_speaker, type: std::string, restore_value: false, initial_value: '""'}
+  - {id: al_e_volume,  type: int,  restore_value: false, initial_value: "40"}
+  - {id: al_e_music,   type: std::string, restore_value: false, initial_value: '""'}  # playlist URI ("" = default sound)
+  - {id: al_e_person,  type: std::string, restore_value: false, initial_value: '""'}  # person.* ("" = anyone)
+  # ── Dynamic alarm model (.3): the panel renders rows from the flat
+  #    pipe-delimited attributes a0..a5 on sensor.scheduled_alarms, NOT 4 fixed
+  #    slots. Each al_aN holds "id|time|label|daysDigits|en|speaker|music|person|vol"
+  #    (daysDigits = concatenated 0..6, Mon0..Sun6; "" = one-shot). al_e_id is the
+  #    id of the alarm under edit ("" = a brand-new alarm → op:add on Save). ──
+  - {id: al_a0, type: std::string, restore_value: false, initial_value: '""'}
+  - {id: al_a1, type: std::string, restore_value: false, initial_value: '""'}
+  - {id: al_a2, type: std::string, restore_value: false, initial_value: '""'}
+  - {id: al_a3, type: std::string, restore_value: false, initial_value: '""'}
+  - {id: al_a4, type: std::string, restore_value: false, initial_value: '""'}
+  - {id: al_a5, type: std::string, restore_value: false, initial_value: '""'}
+  # Current alarm-list page: 0 = a0..a3, 1 = a4..a5. The 4 fixed rows are a
+  # window into the up-to-6 dynamic backend alarms; al_pager_advance flips it.
+  - {id: al_list_page, type: int, restore_value: false, initial_value: '0'}
+  - {id: al_e_id, type: std::string, restore_value: false, initial_value: '""'}
+
+# Person photos for the Who picker — online_image from each person's entity_picture
+# (CALLER-declared, per widgets/person_photo.yaml). entity_picture may be EMPTY in
+# HA (no photo set) → the download fails → the page shows the widget's fallback
+# glyph (handled in on_error). URLs are pushed at runtime from the person sensors.
+# Person photos route through the imageproxy as pre-sized JPEG —
+# matching the Spotify cover path (page-media.yaml) that fixed earlier P4 SDIO/heap
+# crashes from on-panel PNG decode. The proxy delivers exactly 120x120 over plain
+# HTTP (no panel-side TLS); URLs are built from ${imageproxy_url}/${ha_base_url} at
+# runtime. The fetches are SERIALIZED through page-media's shared download pump
+#: person on_value handlers below stash the URL into the pump's slots
+# 20..22 (cov_url/cov_want) instead of calling set_url directly, so a person photo
+# can never download concurrently with a media cover burst (the historical P4 SDIO
+# crash class). Each handler therefore clears cov_inflight so the pump advances.
+online_image:
+  - id: al_who_p1_img
+    url: "${imageproxy_url}/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished:
+      # : refresh the LVGL image from the freshly-decoded buffer — without
+      # this the decode succeeds but the widget renders blank (the media covers
+      # do the same lvgl.image.update; the person photos were missing it).
+      - lvgl.image.update: {id: img_al_who_p1, src: al_who_p1_img}
+      - lvgl.widget.show: img_al_who_p1
+      - lvgl.widget.hide: ic_al_who_p1
+      - lambda: 'id(cov_inflight) = false;'
+    on_error:
+      - lvgl.widget.hide: img_al_who_p1
+      - lvgl.widget.show: ic_al_who_p1
+      - lambda: 'id(cov_inflight) = false;'
+  - id: al_who_p2_img
+    url: "${imageproxy_url}/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished:
+      - lvgl.image.update: {id: img_al_who_p2, src: al_who_p2_img}
+      - lvgl.widget.show: img_al_who_p2
+      - lvgl.widget.hide: ic_al_who_p2
+      - lambda: 'id(cov_inflight) = false;'
+    on_error:
+      - lvgl.widget.hide: img_al_who_p2
+      - lvgl.widget.show: ic_al_who_p2
+      - lambda: 'id(cov_inflight) = false;'
+  - id: al_who_p3_img
+    url: "${imageproxy_url}/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished:
+      - lvgl.image.update: {id: img_al_who_p3, src: al_who_p3_img}
+      - lvgl.widget.show: img_al_who_p3
+      - lvgl.widget.hide: ic_al_who_p3
+      - lambda: 'id(cov_inflight) = false;'
+    on_error:
+      - lvgl.widget.hide: img_al_who_p3
+      - lvgl.widget.show: ic_al_who_p3
+      - lambda: 'id(cov_inflight) = false;'
+
+# ── HA subscriptions: the dynamic alarm list comes from sensor.scheduled_alarms
+#    flat attributes a0..a5 (one pipe-delimited row each, sorted by time) + `next`;
+#    plus the 3 person entity_pictures, the playlist names, and the global ringing
+#    state. Each on_value updates the local model and repaints the list. ──
+text_sensor:
+  - {platform: homeassistant, id: al_a0_ha, entity_id: sensor.scheduled_alarms, attribute: a0, on_value: {then: [{lambda: 'id(al_a0) = x;'}, {script.execute: al_list_refresh}]}}
+  - {platform: homeassistant, id: al_a1_ha, entity_id: sensor.scheduled_alarms, attribute: a1, on_value: {then: [{lambda: 'id(al_a1) = x;'}, {script.execute: al_list_refresh}]}}
+  - {platform: homeassistant, id: al_a2_ha, entity_id: sensor.scheduled_alarms, attribute: a2, on_value: {then: [{lambda: 'id(al_a2) = x;'}, {script.execute: al_list_refresh}]}}
+  - {platform: homeassistant, id: al_a3_ha, entity_id: sensor.scheduled_alarms, attribute: a3, on_value: {then: [{lambda: 'id(al_a3) = x;'}, {script.execute: al_list_refresh}]}}
+  - {platform: homeassistant, id: al_a4_ha, entity_id: sensor.scheduled_alarms, attribute: a4, on_value: {then: [{lambda: 'id(al_a4) = x;'}, {script.execute: al_list_refresh}]}}
+  - {platform: homeassistant, id: al_a5_ha, entity_id: sensor.scheduled_alarms, attribute: a5, on_value: {then: [{lambda: 'id(al_a5) = x;'}, {script.execute: al_list_refresh}]}}
+  # `next` is not consumed directly (the hero recomputes the soonest alarm
+  # locally) — the subscription just triggers a repaint when it changes.
+  - {platform: homeassistant, id: al_next_ha, entity_id: sensor.scheduled_alarms, attribute: next, on_value: {then: [{script.execute: al_list_refresh}]}}
+
+  # ─── Person entity_pictures → push the Who-picker online_image URLs ───
+  - platform: homeassistant
+    id: al_person_p1_pic
+    entity_id: ${person_1_entity}
+    attribute: entity_picture
+    on_value:
+      - if:
+          condition: {lambda: 'return !x.empty();'}
+          then:
+            - lambda: |-
+                id(cov_url)[20] = std::string("${imageproxy_url}/120x120/${ha_base_url}") + x;
+                id(cov_want)[20] = true;   // pump slot 20 = al_who_p1_img
+  - platform: homeassistant
+    id: al_person_p2_pic
+    entity_id: ${person_2_entity}
+    attribute: entity_picture
+    on_value:
+      - if:
+          condition: {lambda: 'return !x.empty();'}
+          then:
+            - lambda: |-
+                id(cov_url)[21] = std::string("${imageproxy_url}/120x120/${ha_base_url}") + x;
+                id(cov_want)[21] = true;   // pump slot 21 = al_who_p2_img
+  - platform: homeassistant
+    id: al_person_p3_pic
+    entity_id: ${person_3_entity}
+    attribute: entity_picture
+    on_value:
+      - if:
+          condition: {lambda: 'return !x.empty();'}
+          then:
+            - lambda: |-
+                id(cov_url)[22] = std::string("${imageproxy_url}/120x120/${ha_base_url}") + x;
+                id(cov_want)[22] = true;   // pump slot 22 = al_who_p3_img
+
+  # ─── SpotifyPlus playlist names → music-picker tile captions ───
+  # Same source page-media's grid uses (sensor.spotify_panel_playlists.names_8,
+  # newline-joined ≤8 names). Paints OUR al_mus_N_name labels (page-media paints its
+  # own pl_tile_N_name; a second subscription to the same attribute is fine).
+  - platform: homeassistant
+    id: al_music_names
+    entity_id: ${spotify_playlists_entity}
+    attribute: names_8
+    on_value:
+      - lambda: |-
+          lv_obj_t* names[7] = { id(al_mus_0_name), id(al_mus_1_name), id(al_mus_2_name), id(al_mus_3_name),
+                                 id(al_mus_4_name), id(al_mus_5_name), id(al_mus_6_name) };
+          std::string s = x;
+          for (int i = 0; i < 7; i++) {
+            size_t nl = s.find('\n');
+            std::string name = (nl == std::string::npos) ? s : s.substr(0, nl);
+            lv_label_set_text(names[i], name.c_str());
+            if (nl == std::string::npos) { s.clear(); } else { s = s.substr(nl + 1); }
+          }
+
+  # ─── Global ringing state (contract §6) — drives the cross-panel overlay ───
+  - platform: homeassistant
+    id: al_ringing_ha
+    entity_id: input_text.alarm_ringing
+    on_value:
+      - lambda: |-
+          // Non-empty slot id ("1".."4") → show the overlay over whatever page is
+          // active; empty → hide it. Cross-panel: any panel writing "" clears all.
+          if (!x.empty()) {
+            lv_obj_clear_flag(id(alarm_ringing_overlay), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(alarm_ringing_overlay), LV_OBJ_FLAG_HIDDEN);
+          }
+  - platform: homeassistant
+    id: al_ringing_name_ha
+    entity_id: input_text.alarm_ringing_name
+    on_value:
+      - lvgl.label.update: {id: lbl_al_ring_name, text: !lambda 'return x.empty() ? std::string("WAKE") : x;'}
+  - platform: homeassistant
+    id: al_ringing_speaker_ha
+    entity_id: input_text.alarm_ringing_speaker
+    on_value:
+      - lambda: |-
+          // Show ownership: target speaker room, suffixed with the panel/elsewhere tag.
+          auto UP = [](std::string s){ for (auto &c : s) c = toupper((unsigned char)c); return s; };
+          std::string room;
+          if (x == "media_player.${alarm_row_1_slug}" || x == "media_player.${alarm_row_5_slug}") room = UP("${alarm_row_1_label}");
+          else if (x == "media_player.${alarm_row_2_slug}") room = UP("${alarm_row_2_label}");
+          else if (x == "media_player.${alarm_row_3_slug}") room = UP("${alarm_row_3_label}");
+          else if (x == "media_player.${alarm_row_4_slug}") room = UP("${alarm_row_4_label}");
+          else room = UP("${alarm_row_0_label}");
+          bool ours = x.empty() || x == "$alarm_room_player";
+          std::string tag = ours ? " · THIS PANEL" : " · ELSEWHERE";
+          lv_label_set_text(id(lbl_al_ring_target), (room + tag).c_str());
+
+script:
+  # NB: the list/edit refresh lambdas inline their room-name / day-label / mins-until
+  # helpers (ESPHome scripts are async actions, not synchronously-callable functions —
+  # there is no value-returning `id(helper)(x)` from inside a lambda), so the small
+  # mapping logic is duplicated where needed rather than factored into helper scripts.
+
+  # ── Repaint the alarm LIST page from the flat rows a0..a3 + Add (always shown) ──
+  #    mode:restart + leading delay coalesces the burst of per-attribute triggers
+  #    (a0..a5 + next each fire on a backend update) into ONE repaint.
+  - id: al_list_refresh
+    mode: restart
+    then:
+      - delay: 100ms
+      - lambda: |-
+          lv_obj_t* rows[4]    = { id(al_row_1), id(al_row_2), id(al_row_3), id(al_row_4) };
+          lv_obj_t* times[4]   = { id(al_row_1_time), id(al_row_2_time), id(al_row_3_time), id(al_row_4_time) };
+          lv_obj_t* names[4]   = { id(al_row_1_name), id(al_row_2_name), id(al_row_3_name), id(al_row_4_name) };
+          lv_obj_t* metas[4]   = { id(al_row_1_meta), id(al_row_2_meta), id(al_row_3_meta), id(al_row_4_meta) };
+          lv_obj_t* spkic[4]   = { id(al_row_1_spk), id(al_row_2_spk), id(al_row_3_spk), id(al_row_4_spk) };
+          lv_obj_t* musice[4]  = { id(al_row_1_music), id(al_row_2_music), id(al_row_3_music), id(al_row_4_music) };
+          lv_obj_t* knobs[4]   = { id(al_row_1_tg), id(al_row_2_tg), id(al_row_3_tg), id(al_row_4_tg) };
+          lv_obj_t* tracks[4]  = { id(al_row_1_tgbtn), id(al_row_2_tgbtn), id(al_row_3_tgbtn), id(al_row_4_tgbtn) };
+
+          // Dynamic backend exposes up to 6 alarms (a0..a5). The 4 fixed rows are a
+          // PAGE WINDOW into them: page 0 = a0..a3, page 1 = a4..a5. The
+          // pager (al_pager_btn) flips pages so every alarm is reachable/editable; the
+          // hero scans ALL 6 for the global soonest, independent of the visible page.
+          std::string all6[6] = { id(al_a0), id(al_a1), id(al_a2), id(al_a3), id(al_a4), id(al_a5) };
+          auto valid = [](const std::string& r)->bool {
+            if (r.empty()) return false; size_t p = r.find('|');
+            return !((p==std::string::npos) ? r : r.substr(0,p)).empty();
+          };
+          int total = 0; for (int i = 0; i < 6; i++) if (valid(all6[i])) total++;
+          const int pages = (total <= 4) ? 1 : 2;        // backend caps at 6 → ≤2 pages
+          if (id(al_list_page) >= pages || id(al_list_page) < 0) id(al_list_page) = 0;
+          const int page = id(al_list_page);
+          std::string raw[4];
+          for (int i = 0; i < 4; i++) { int a = page*4 + i; raw[i] = (a < 6) ? all6[a] : std::string(); }
+
+          const uint32_t blue = 0x01B4DE, white = 0xF2F0EB, dim = 0x4A4F57, g500 = 0x9E9E9E;
+          const std::string room_self = "$alarm_room_player";
+          // Roster-driven room label (uppercase for meta/hero) — slugs + labels come
+          // from the panel roster; kitchen_2 (row 5) folds into Kitchen.
+          auto UP = [](std::string s){ for (auto &c : s) c = toupper((unsigned char)c); return s; };
+          auto room_up = [&](const std::string& e) -> std::string {
+            if (e == "media_player.${alarm_row_1_slug}" || e == "media_player.${alarm_row_5_slug}") return UP("${alarm_row_1_label}");
+            if (e == "media_player.${alarm_row_2_slug}") return UP("${alarm_row_2_label}");
+            if (e == "media_player.${alarm_row_3_slug}") return UP("${alarm_row_3_label}");
+            if (e == "media_player.${alarm_row_4_slug}") return UP("${alarm_row_4_label}");
+            return UP("${alarm_row_0_label}");
+          };
+
+          for (int i = 0; i < 4; i++) {
+            // Split "id|time|label|daysDigits|en|speaker|music|person|vol".
+            std::string f[9];
+            { std::string s = raw[i]; int fi = 0;
+              while (fi < 9) { size_t p = s.find('|'); if (p == std::string::npos) { f[fi++] = s; break; } f[fi++] = s.substr(0,p); s = s.substr(p+1); } }
+            bool exists = !raw[i].empty() && !f[0].empty();
+            if (!exists) { lv_obj_add_flag(rows[i], LV_OBJ_FLAG_HIDDEN); continue; }
+            lv_obj_clear_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
+
+            std::string tm = f[1], label = f[2], days = f[3], sp = f[5], mu = f[6], pe = f[7];
+            bool en = (f[4] == "1");
+            std::string hhmm = (tm.size() >= 5) ? tm.substr(0,5) : tm;
+            lv_label_set_text(times[i], hhmm.c_str());
+            lv_label_set_text(names[i], label.empty() ? "Alarm" : label.c_str());
+
+            bool elsewhere = !sp.empty() && sp != room_self;
+            std::string roomlbl = room_up(sp);
+            // Days digit-string (e.g. "01234", Mon0..Sun6) → compact label.
+            bool on[7] = {false,false,false,false,false,false,false}; int cnt = 0;
+            for (size_t k = 0; k < days.size(); k++) { int d = days[k]-'0'; if (d>=0 && d<7 && !on[d]) { on[d]=true; cnt++; } }
+            std::string daylbl;
+            if (cnt==0) daylbl="ONCE";
+            else if (cnt==7) daylbl="EVERY DAY";
+            else if (on[0]&&on[1]&&on[2]&&on[3]&&on[4]&&!on[5]&&!on[6]) daylbl="MON-FRI";
+            else if (!on[0]&&!on[1]&&!on[2]&&!on[3]&&!on[4]&&on[5]&&on[6]) daylbl="SAT SUN";
+            else { static const char* D[7]={"MON","TUE","WED","THU","FRI","SAT","SUN"}; for(int k=0;k<7;k++) if(on[k]){ if(!daylbl.empty()) daylbl+=" "; daylbl+=D[k]; } }
+            std::string meta = daylbl + " · " + roomlbl;
+            if (elsewhere) meta += " · ELSEWHERE";
+            if (!pe.empty()) { std::string who = pe; size_t dot = who.find('.'); if (dot != std::string::npos) who = who.substr(dot+1); if (!who.empty()) who[0]=toupper(who[0]); meta += " · IF " + who; }
+            lv_label_set_text(metas[i], meta.c_str());
+
+            { const char* g = "${alarm_row_0_glyph}";
+              if (sp == "media_player.${alarm_row_1_slug}" || sp == "media_player.${alarm_row_5_slug}") g = "${alarm_row_1_glyph}";
+              else if (sp == "media_player.${alarm_row_2_slug}") g = "${alarm_row_2_glyph}";
+              else if (sp == "media_player.${alarm_row_3_slug}") g = "${alarm_row_3_glyph}";
+              else if (sp == "media_player.${alarm_row_4_slug}") g = "${alarm_row_4_glyph}";
+              lv_label_set_text(spkic[i], g); }
+            lv_label_set_text(musice[i], mu.empty() ? "$mdi_bell" : "$mdi_music");
+
+            uint32_t fg = !en ? dim : (elsewhere ? g500 : white);
+            lv_obj_set_style_text_color(times[i], lv_color_hex(fg), 0);
+            lv_obj_set_style_text_color(names[i], lv_color_hex(en ? (elsewhere ? g500 : white) : dim), 0);
+            // ON = cyan track + white knob; OFF = dark track + grey knob — the two
+            // states must read at a distance (grey knob on grey track was invisible).
+            lv_obj_set_style_bg_color(tracks[i], lv_color_hex(en ? blue : 0x2B3038), 0);
+            lv_obj_set_style_bg_color(knobs[i], lv_color_hex(en ? white : g500), 0);
+            lv_obj_align(knobs[i], en ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID, en ? -4 : 4, 0);
+          }
+
+          // Next-alarm HERO — soonest ENABLED across ALL 6 (global, page-independent).
+          // mins-until-next for one row; 99999 if disabled/invalid.
+          auto mins_of = [&](const std::string& r) -> int {
+            std::string f[9];
+            { std::string s = r; int fi = 0;
+              while (fi < 9) { size_t p = s.find('|'); if (p == std::string::npos) { f[fi++] = s; break; } f[fi++] = s.substr(0,p); s = s.substr(p+1); } }
+            if (f[4] != "1") return 99999;
+            bool on[7] = {false,false,false,false,false,false,false}; int cnt = 0;
+            for (size_t k = 0; k < f[3].size(); k++) { int d = f[3][k]-'0'; if (d>=0 && d<7 && !on[d]) { on[d]=true; cnt++; } }
+            int hh=0, mm=0; sscanf(f[1].c_str(), "%d:%d", &hh, &mm);
+            auto t = id(ha_time).now(); int mins = 99999;
+            if (t.is_valid()) {
+              int wd_today = (t.day_of_week + 5) % 7;
+              int now_min = t.hour*60 + t.minute, tgt = hh*60+mm;
+              if (cnt==0) { int delta = tgt-now_min; if (delta<=0) delta+=1440; mins=delta; }
+              else { for(int add=0; add<8; add++){ int wd=(wd_today+add)%7; if(on[wd]){ int delta=add*1440+(tgt-now_min); if(delta>0){mins=delta;break;}}} }
+            }
+            return mins;
+          };
+          int best_abs = -1, best_mins = 99999;
+          for (int i = 0; i < 6; i++) { if (!valid(all6[i])) continue; int m = mins_of(all6[i]); if (m < best_mins) { best_mins = m; best_abs = i; } }
+          if (best_abs >= 0) {
+            std::string f[9];
+            { std::string s = all6[best_abs]; int fi = 0;
+              while (fi < 9) { size_t p = s.find('|'); if (p == std::string::npos) { f[fi++] = s; break; } f[fi++] = s.substr(0,p); s = s.substr(p+1); } }
+            lv_obj_clear_flag(id(al_hero), LV_OBJ_FLAG_HIDDEN);
+            std::string hhmm = (f[1].size() >= 5) ? f[1].substr(0,5) : f[1];
+            lv_label_set_text(id(al_hero_time), hhmm.c_str());
+            lv_label_set_text(id(al_hero_name), f[2].empty() ? "Alarm" : f[2].c_str());
+            std::string roomlbl = room_up(f[5]);
+            char sub[64]; int hrs = best_mins / 60, mns = best_mins % 60;
+            snprintf(sub, sizeof(sub), "IN %dH %02dM · %s", hrs, mns, roomlbl.c_str());
+            lv_label_set_text(id(al_hero_sub), sub);
+          } else {
+            lv_obj_add_flag(id(al_hero), LV_OBJ_FLAG_HIDDEN);
+          }
+
+          // Pager: shown only when >4 alarms span more than one page.
+          if (total > 4) {
+            lv_obj_clear_flag(id(al_pager_btn), LV_OBJ_FLAG_HIDDEN);
+            char pg[16]; snprintf(pg, sizeof(pg), "%d/%d", page+1, pages);
+            lv_label_set_text(id(al_pager_lbl), pg);
+          } else {
+            lv_obj_add_flag(id(al_pager_btn), LV_OBJ_FLAG_HIDDEN);
+          }
+
+          // Add affordance: ALWAYS visible (dynamic backend — no fixed-slot cap).
+          lv_obj_clear_flag(id(al_add_btn), LV_OBJ_FLAG_HIDDEN);
+
+  # ── Flip the alarm list page: wrap 0↔1 then repaint. Hidden unless >4. ──
+  - id: al_pager_advance
+    then:
+      - lambda: 'id(al_list_page) = (id(al_list_page) + 1) % 2;'
+      - script.execute: al_list_refresh
+
+  # ── Toggle a slot's enabled state straight from the list (writes input_boolean) ──
+  #    `action:` is a compile-time string in ESPHome (NOT templatable), so branch the
+  #    turn_on / turn_off with an if on the slot's current state.
+  # ── Toggle a row's enabled straight from the list → panel_alarm_edit op:toggle ──
+  - id: al_row_toggle
+    parameters:
+      n: int
+    then:
+      - homeassistant.event:
+          event: esphome.panel_alarm_edit
+          data_template: {op: "toggle", id: "{{ aid }}"}
+          variables:
+            aid: !lambda |-
+              // Visible row n (1..4) → absolute alarm index via the current page.
+              int a = id(al_list_page)*4 + (n-1);
+              std::string all6[6] = { id(al_a0), id(al_a1), id(al_a2), id(al_a3), id(al_a4), id(al_a5) };
+              std::string raw = (a>=0 && a<6) ? all6[a] : std::string();
+              size_t p = raw.find('|'); return (p==std::string::npos) ? raw : raw.substr(0,p);
+
+  # ── Open the edit page for list row n: seed the working copy from a{n-1} ──
+  - id: al_edit_open
+    parameters:
+      n: int
+    then:
+      - lambda: |-
+          // Visible row n (1..4) → absolute alarm index via the current page.
+          int a = id(al_list_page)*4 + (n-1);
+          std::string all6[6] = { id(al_a0), id(al_a1), id(al_a2), id(al_a3), id(al_a4), id(al_a5) };
+          std::string raw = (a>=0 && a<6) ? all6[a] : std::string();
+          std::string f[9]; { std::string s = raw; int fi=0; while(fi<9){ size_t p=s.find('|'); if(p==std::string::npos){f[fi++]=s;break;} f[fi++]=s.substr(0,p); s=s.substr(p+1);} }
+          id(al_e_id) = f[0];
+          int hh=7, mm=0; sscanf(f[1].c_str(), "%d:%d", &hh, &mm); id(al_e_hour)=hh; id(al_e_min)=mm;
+          id(al_e_enabled) = (f[4] == "1");
+          id(al_e_speaker) = f[5];
+          id(al_e_music)   = f[6];
+          id(al_e_person)  = f[7];
+          { int v = atoi(f[8].c_str()); id(al_e_volume) = (v>=0 && v<=100) ? v : 40; }
+          // Day mask Mon=bit0..Sun=bit6 from the digit string. Empty days = one-off
+          // (repeat OFF); non-empty = recurring (repeat ON). Seed 127 when one-off so
+          // toggling Repeat on defaults to every day.
+          int mask = 0; for (size_t k=0;k<f[3].size();k++){ int d=f[3][k]-'0'; if(d>=0&&d<7) mask|=(1<<d); }
+          id(al_e_repeat) = (mask != 0);
+          id(al_e_days) = (mask != 0) ? mask : 127;
+      - script.execute: al_edit_refresh
+      - script.execute: takeover_enter
+      - lvgl.page.show: alarm_edit_page
+      - lvgl.widget.hide: takeover_back   # page draws its own header chevron (no double back)
+
+  # ── "Add" — open the editor on a fresh alarm (al_e_id "" → op:add on Save) ──
+  - id: al_add_new
+    then:
+      - lambda: |-
+          id(al_e_id) = std::string("");
+          // Sensible defaults for a fresh alarm: ONE-OFF (repeat off) by default.
+          id(al_e_hour) = 7; id(al_e_min) = 0; id(al_e_enabled) = true;
+          id(al_e_repeat) = false; id(al_e_days) = 127; id(al_e_speaker) = std::string("$alarm_room_player");
+          id(al_e_music) = std::string(""); id(al_e_person) = std::string(""); id(al_e_volume) = 40;
+      - script.execute: al_edit_refresh
+      - script.execute: takeover_enter
+      - lvgl.page.show: alarm_edit_page
+      - lvgl.widget.hide: takeover_back
+
+  # ── Repaint the edit page from the working copy ──
+  - id: al_edit_refresh
+    then:
+      - lambda: |-
+          char hb[4], mb[4];
+          snprintf(hb, sizeof(hb), "%02d", id(al_e_hour));
+          snprintf(mb, sizeof(mb), "%02d", id(al_e_min));
+          lv_label_set_text(id(val_al_hour), hb);
+          lv_label_set_text(id(val_al_min), mb);
+          // Repeat toggle: OFF = one-off (chips hidden, "Rings once" hint); ON = pick days.
+          bool rep = id(al_e_repeat);
+          lv_obj_set_style_bg_color(id(al_repeat_btn), lv_color_hex(rep ? 0x10353F : 0x14161B), 0);
+          lv_obj_set_style_border_color(id(al_repeat_btn), lv_color_hex(rep ? 0x01B4DE : 0x2B3038), 0);
+          lv_label_set_text(id(al_repeat_lbl), rep ? "REPEAT" : "ONCE");
+          lv_obj_set_style_text_color(id(al_repeat_lbl), lv_color_hex(rep ? 0x01B4DE : 0x9E9E9E), 0);
+          // Day chips: bit i → chip i (only meaningful when repeating).
+          lv_obj_t* chips[7] = { id(al_day_0), id(al_day_1), id(al_day_2), id(al_day_3), id(al_day_4), id(al_day_5), id(al_day_6) };
+          for (int i = 0; i < 7; i++) {
+            bool on = (id(al_e_days) >> i) & 1;
+            lv_obj_set_style_bg_color(chips[i], lv_color_hex(on ? 0x10353F : 0x14161B), 0);
+            lv_obj_set_style_border_color(chips[i], lv_color_hex(on ? 0x01B4DE : 0x2B3038), 0);
+            lv_obj_set_style_text_color(chips[i], lv_color_hex(on ? 0xF2F0EB : 0xBDBDBD), 0);
+            if (rep) lv_obj_clear_flag(chips[i], LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(chips[i], LV_OBJ_FLAG_HIDDEN);
+          }
+          if (rep) lv_obj_add_flag(id(al_repeat_hint), LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(id(al_repeat_hint), LV_OBJ_FLAG_HIDDEN);
+          // CTA value labels (+ the SPEAKER badge glyph, kept in step with the room).
+          { std::string e = id(al_e_speaker); std::string r; const char* g;
+            if (e == "media_player.${alarm_row_1_slug}" || e == "media_player.${alarm_row_5_slug}") { r = "${alarm_row_1_label}"; g = "${alarm_row_1_glyph}"; }
+            else if (e == "media_player.${alarm_row_2_slug}") { r = "${alarm_row_2_label}"; g = "${alarm_row_2_glyph}"; }
+            else if (e == "media_player.${alarm_row_3_slug}") { r = "${alarm_row_3_label}"; g = "${alarm_row_3_glyph}"; }
+            else if (e == "media_player.${alarm_row_4_slug}") { r = "${alarm_row_4_label}"; g = "${alarm_row_4_glyph}"; }
+            else { r = "${alarm_row_0_label}"; g = "${alarm_row_0_glyph}"; }
+            lv_label_set_text(id(al_cta_spk_v), r.c_str());
+            lv_label_set_text(id(al_cta_spk_g), g); }
+          lv_label_set_text(id(al_cta_music_v), id(al_e_music).empty() ? "Default Sound" : "Playlist");
+          { std::string p = id(al_e_person);
+            if (p.empty()) lv_label_set_text(id(al_cta_who_v), "Anyone");
+            else { size_t d = p.find('.'); std::string who = (d!=std::string::npos)?p.substr(d+1):p; if(!who.empty()) who[0]=toupper(who[0]); lv_label_set_text(id(al_cta_who_v), who.c_str()); } }
+          // Enable toggle — same ON/OFF scheme as the list rows (cyan track +
+          // white knob when on; dark track + grey knob when off).
+          lv_obj_set_style_bg_color(id(al_edit_en_btn), lv_color_hex(id(al_e_enabled) ? 0x01B4DE : 0x2B3038), 0);
+          lv_obj_set_style_bg_color(id(al_edit_en_knob), lv_color_hex(id(al_e_enabled) ? 0xF2F0EB : 0x9E9E9E), 0);
+          lv_obj_align(id(al_edit_en_knob), id(al_e_enabled) ? LV_ALIGN_RIGHT_MID : LV_ALIGN_LEFT_MID, id(al_e_enabled) ? -4 : 4, 0);
+          // Wake volume row (moved here from the speaker picker — per-alarm property).
+          char vb[24]; snprintf(vb, sizeof(vb), "WAKE VOLUME · %d%%", id(al_e_volume));
+          lv_label_set_text(id(lbl_al_e_vol), vb);
+          lv_slider_set_value(id(al_e_vol_sld), id(al_e_volume), LV_ANIM_OFF);
+          // Delete: shown only when editing an EXISTING alarm (al_e_id set).
+          if (id(al_e_id).empty()) lv_obj_add_flag(id(al_edit_del_btn), LV_OBJ_FLAG_HIDDEN);
+          else lv_obj_clear_flag(id(al_edit_del_btn), LV_OBJ_FLAG_HIDDEN);
+
+  # ── Stepper abstract-script contract (uid: al_hour / al_min) ──
+  - id: al_hour_inc
+    then: [{lambda: 'id(al_e_hour) = (id(al_e_hour) + 1) % 24;'}, {script.execute: al_edit_refresh}]
+  - id: al_hour_dec
+    then: [{lambda: 'id(al_e_hour) = (id(al_e_hour) + 23) % 24;'}, {script.execute: al_edit_refresh}]
+  - id: al_min_inc
+    then: [{lambda: 'id(al_e_min) = (id(al_e_min) + 5) % 60;'}, {script.execute: al_edit_refresh}]
+  - id: al_min_dec
+    then: [{lambda: 'id(al_e_min) = (id(al_e_min) + 55) % 60;'}, {script.execute: al_edit_refresh}]
+
+  # ── Toggle a day bit ──
+  - id: al_day_toggle
+    parameters:
+      d: int
+    then:
+      - lambda: 'id(al_e_days) ^= (1 << d);'
+      - script.execute: al_edit_refresh
+
+  # ── Toggle REPEAT (one-off ⟷ recurring). Enabling with no days → every day. ──
+  - id: al_repeat_toggle
+    then:
+      - lambda: |-
+          id(al_e_repeat) = !id(al_e_repeat);
+          if (id(al_e_repeat) && id(al_e_days) == 0) id(al_e_days) = 127;
+      - script.execute: al_edit_refresh
+
+  # ── Toggle the edit-page enable switch ──
+  - id: al_edit_enable_toggle
+    then:
+      - lambda: 'id(al_e_enabled) = !id(al_e_enabled);'
+      - script.execute: al_edit_refresh
+
+  # ── Wake-volume slider (edit page) ──
+  - id: al_e_vol_set
+    then:
+      - lambda: 'id(al_e_volume) = (int) lv_slider_get_value(id(al_e_vol_sld));'
+      - script.execute: al_edit_refresh
+
+  # ── Save the working copy → ONE panel_alarm_edit event, then exit ──
+  #    NR (sensor.scheduled_alarms backend) owns persistence; the panel emits the
+  #    whole alarm in one event. op=add when al_e_id is empty (new), else update by
+  #    id. Label is NOT set here (no keyboard; defaults/voice own it).
+  - id: al_edit_save
+    then:
+      - homeassistant.event:
+          event: esphome.panel_alarm_edit
+          data_template:
+            op: "{{ op }}"
+            id: "{{ aid }}"
+            time: "{{ tm }}"
+            days: "{{ dys }}"
+            enabled: "{{ en }}"
+            speaker: "{{ spk }}"
+            music: "{{ mus }}"
+            person: "{{ per }}"
+            vol: "{{ vol }}"
+          variables:
+            op:  !lambda 'return id(al_e_id).empty() ? std::string("add") : std::string("update");'
+            aid: !lambda 'return id(al_e_id);'
+            tm:  !lambda 'char b[8]; snprintf(b,sizeof(b),"%02d:%02d", id(al_e_hour), id(al_e_min)); return std::string(b);'
+            dys: !lambda |-
+              // Repeat OFF → empty days (one-off). Repeat ON → selected day chips.
+              if (!id(al_e_repeat)) return std::string("");
+              std::string out; for (int i = 0; i < 7; i++) if ((id(al_e_days) >> i) & 1) { if (!out.empty()) out += ","; out += std::to_string(i); }
+              return out;
+            en:  !lambda 'return id(al_e_enabled) ? std::string("true") : std::string("false");'
+            spk: !lambda 'return id(al_e_speaker);'
+            mus: !lambda 'return id(al_e_music);'
+            per: !lambda 'return id(al_e_person);'
+            vol: !lambda 'return std::to_string(id(al_e_volume));'
+      - script.execute: takeover_exit
+
+  # ── DELETE the alarm under edit → panel_alarm_edit op:delete, then exit ──
+  - id: al_edit_delete
+    then:
+      - homeassistant.event:
+          event: esphome.panel_alarm_edit
+          data_template: {op: "delete", id: "{{ aid }}"}
+          variables: {aid: !lambda 'return id(al_e_id);'}
+      - script.execute: takeover_exit
+
+  # ── SPEAKER sub-takeover: open + paint selection, write on pick ──
+  - id: al_speaker_open
+    then:
+      - script.execute: al_speaker_refresh
+      - lvgl.page.show: alarm_speaker_page
+  - id: al_speaker_refresh
+    then:
+      - lambda: |-
+          struct R { lv_obj_t* row; lv_obj_t* ic; lv_obj_t* nm; lv_obj_t* rc; const char* ent; };
+          R rs[6] = {
+            { id(al_spk_row_0), id(ic_al_spk_row_0), id(name_al_spk_row_0), id(al_spk_check_0), "media_player.${alarm_row_0_slug}" },
+            { id(al_spk_row_1), id(ic_al_spk_row_1), id(name_al_spk_row_1), id(al_spk_check_1), "media_player.${alarm_row_1_slug}" },
+            { id(al_spk_row_2), id(ic_al_spk_row_2), id(name_al_spk_row_2), id(al_spk_check_2), "media_player.${alarm_row_2_slug}" },
+            { id(al_spk_row_3), id(ic_al_spk_row_3), id(name_al_spk_row_3), id(al_spk_check_3), "media_player.${alarm_row_3_slug}" },
+            { id(al_spk_row_4), id(ic_al_spk_row_4), id(name_al_spk_row_4), id(al_spk_check_4), "media_player.${alarm_row_4_slug}" },
+            { id(al_spk_row_5), id(ic_al_spk_row_5), id(name_al_spk_row_5), id(al_spk_check_5), "media_player.${alarm_row_5_slug}" },
+          };
+          for (int i = 0; i < 6; i++) {
+            bool sel = (id(al_e_speaker) == rs[i].ent) || (id(al_e_speaker).empty() && std::string(rs[i].ent) == "$alarm_room_player");
+            lv_label_set_text(rs[i].rc, sel ? "$mdi_check_circle" : "$mdi_circle_outline");
+            lv_obj_set_style_text_color(rs[i].rc, lv_color_hex(sel ? 0x01B4DE : 0x3A3F48), 0);
+            lv_obj_set_style_text_color(rs[i].nm, lv_color_hex(sel ? 0x01B4DE : 0xF2F0EB), 0);
+            lv_obj_set_style_text_color(rs[i].ic, lv_color_hex(sel ? 0x01B4DE : 0xBDBDBD), 0);
+          }
+  # tap = select & return (working copy + jump back to the edit page)
+  - id: al_speaker_pick
+    parameters:
+      ent: std::string
+    then:
+      - lambda: 'id(al_e_speaker) = ent;'
+      - script.execute: al_edit_refresh
+      - lvgl.page.show: alarm_edit_page
+
+  # ── MUSIC sub-takeover: cover grid (reuse SpotifyPlus playlist ids from page-media)
+  #    + a Default-Sound tile. Selection writes a spotify:playlist: URI or "". ──
+  - id: al_music_open
+    then:
+      - script.execute: al_music_refresh
+      - lvgl.page.show: alarm_music_page
+  - id: al_music_refresh
+    then:
+      - lambda: |-
+          // Default-Sound tile selected when music is empty.
+          bool def = id(al_e_music).empty();
+          lv_obj_set_style_border_width(id(al_mus_default), def ? 4 : 0, 0);
+          lv_obj_set_style_border_color(id(al_mus_default), lv_color_hex(0x01B4DE), 0);
+          // Playlist tiles: reuse page-media's playlist_ids. Only 7 fit (cell 0,0 is
+          // the Default-Sound tile), so we expose idx 0..6 (al_mus_0..6).
+          lv_obj_t* tiles[7] = { id(al_mus_0), id(al_mus_1), id(al_mus_2), id(al_mus_3), id(al_mus_4), id(al_mus_5), id(al_mus_6) };
+          for (int i = 0; i < 7; i++) {
+            bool sel = false;
+            if (i < (int) id(playlist_ids).size() && !id(playlist_ids)[i].empty()) {
+              std::string uri = std::string("spotify:playlist:") + id(playlist_ids)[i];
+              sel = (id(al_e_music) == uri);
+              lv_obj_clear_flag(tiles[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(tiles[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            lv_obj_set_style_border_width(tiles[i], sel ? 4 : 0, 0);
+            lv_obj_set_style_border_color(tiles[i], lv_color_hex(0x01B4DE), 0);
+          }
+  - id: al_music_pick_tile
+    parameters:
+      idx: int
+    then:
+      - lambda: |-
+          if (idx < 0) { id(al_e_music) = std::string(""); }
+          else if (idx < (int) id(playlist_ids).size() && !id(playlist_ids)[idx].empty()) {
+            id(al_e_music) = std::string("spotify:playlist:") + id(playlist_ids)[idx];
+          }
+      - script.execute: al_edit_refresh
+      - lvgl.page.show: alarm_edit_page   # tap = select & return
+
+  # ── WHO sub-takeover: person photos. Writes person.* or "" (anyone). ──
+  - id: al_who_open
+    then:
+      - script.execute: al_who_refresh
+      - lvgl.page.show: alarm_who_page
+  - id: al_who_refresh
+    then:
+      - lambda: |-
+          struct W { lv_obj_t* ring; const char* ent; };
+          W ws[4] = {
+            { id(al_who_anyone), "" },
+            { id(al_who_p1),  "${person_1_entity}" },
+            { id(al_who_p2),  "${person_2_entity}" },
+            { id(al_who_p3),"${person_3_entity}" },
+          };
+          for (int i = 0; i < 4; i++) {
+            bool sel = (id(al_e_person) == ws[i].ent);
+            lv_obj_set_style_border_color(ws[i].ring, lv_color_hex(sel ? 0x01B4DE : 0x616161), 0);
+            lv_obj_set_style_border_width(ws[i].ring, sel ? 3 : 2, 0);
+          }
+          // : re-arm the person-photo fetch every time the Who-picker opens.
+          // The  pump clears cov_want BEFORE fetching and never retries, so a
+          // single lost/starved boot fetch (starved behind the 0..19 cover burst)
+          // left the avatar blank forever. Re-requesting here makes the photos
+          // self-healing AND lazy (only fetched when the picker is actually shown).
+          // The cached cov_url[20..22] (full imageproxy URL) is set by the person
+          // entity_picture on_value handlers; empty url = no photo -> stays glyph.
+          // Skip a slot already mid-decode so we don't thrash the in-flight fetch.
+          struct P { esphome::online_image::OnlineImage *img; int slot; };
+          P ps[3] = {
+            { id(al_who_p1_img),   20 },
+            { id(al_who_p2_img),   21 },
+            { id(al_who_p3_img), 22 },
+          };
+          for (auto &p : ps) {
+            if (!id(cov_url)[p.slot].empty() && !p.img->is_decoding())
+              id(cov_want)[p.slot] = true;
+          }
+  - id: al_who_pick
+    parameters:
+      ent: std::string
+    then:
+      - lambda: 'id(al_e_person) = ent;'
+      - script.execute: al_edit_refresh
+      - lvgl.page.show: alarm_edit_page   # tap = select & return
+
+  # ── Ringing overlay (.6): Snooze / Dismiss write back to HA ──
+  #    Dismiss → clear alarm_ringing (backend stops media). Snooze → clear + the
+  #    backend re-arms (+9 min); we just clear ringing and call the snooze path so
+  #    ANY panel that taps it clears the overlay everywhere.
+  - id: al_ring_dismiss
+    then:
+      # Make Dismiss AUTHORITATIVE. alarm_snooze_armed is a single global flag but
+      # snooze is per-cycle: if alarm N was snoozed (armed still ON) and alarm M now
+      # fires and is dismissed, the backend's clear automation reads armed AT CLEAR
+      # TIME — it would wrongly snooze M (and lose N). So turn OFF armed BEFORE
+      # clearing ringing (mirror of al_ring_snooze turning it ON before clear), so
+      # the backend's snooze-vs-dismiss decision reflects the button actually pressed.
+      - homeassistant.action:
+          action: input_boolean.turn_off
+          data: {entity_id: input_boolean.alarm_snooze_armed}
+      - homeassistant.action:
+          action: input_text.set_value
+          data: {entity_id: input_text.alarm_ringing, value: ""}
+      - lvgl.widget.hide: alarm_ringing_overlay
+  - id: al_ring_snooze
+    then:
+      # Order matters: the backend's dismiss/snooze automation triggers on
+      # alarm_ringing CLEARING and reads alarm_snooze_armed AT THAT MOMENT to
+      # decide snooze-vs-dismiss. So ARM first, THEN clear ringing (entity name
+      # must match the backend's helper exactly: alarm_snooze_armed).
+      - homeassistant.action:
+          action: input_boolean.turn_on
+          data: {entity_id: input_boolean.alarm_snooze_armed}
+      - homeassistant.action:
+          action: input_text.set_value
+          data: {entity_id: input_text.alarm_ringing, value: ""}
+      - lvgl.widget.hide: alarm_ringing_overlay
+
+lvgl:
+  pages:
+    # ═══════════════════════════════════════════════════════════════════════
+    # alarm_page — F2 P1 (swipe page). Next-alarm hero + 4 fitted rows + Add.
+    # ═══════════════════════════════════════════════════════════════════════
+    - id: alarm_page
+      styles: page_style
+      <<: !include nav2d-swipe.yaml
+      on_load:
+        - script.execute: {id: nav_arrive, f: 2, p: 1}
+        - script.execute: al_list_refresh
+      widgets:
+        # Singleton top bar (battery · clock · cog) is the top_layer — keep
+        # all content below y=72.
+
+        # ── Next-alarm HERO ──
+        - obj:
+            id: al_hero
+            align: TOP_MID
+            y: 84
+            width: 688
+            height: 132
+            radius: 18
+            bg_color: 0x06222B
+            bg_opa: cover
+            border_width: 1
+            border_color: 0x01B4DE
+            pad_left: 24
+            pad_right: 20
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 18}
+            widgets:
+              - label: {id: al_hero_time, clickable: false, text: "--:--", text_font: oswald_72, text_color: white}
+              - obj:
+                  width: 280
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  flex_grow: 1
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 4}
+                  widgets:
+                    - label: {id: al_hero_name, clickable: false, text: "—", text_font: oswald_24, text_color: white}
+                    - label: {id: al_hero_sub, clickable: false, text: "NEXT", text_font: oswald_18, text_color: 0x01B4DE}
+
+        # ── SLOT ROWS (4 fixed; empty slots hidden) ──
+        - obj:
+            align: TOP_MID
+            y: 228
+            width: 688
+            height: 348
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: START, flex_align_cross: CENTER, pad_row: 6}
+            widgets:
+              # Row template repeated 4×. Tap row → edit; tap toggle → enable/disable.
+              # ── Row 1 ──
+              - obj:
+                  id: al_row_1
+                  width: 100%
+                  height: 78
+                  bg_color: gray900
+                  bg_opa: 30%
+                  radius: 14
+                  border_width: 0
+                  pad_left: 16
+                  pad_right: 12
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 14}
+                  on_click: [{script.execute: {id: al_edit_open, n: 1}}]
+                  widgets:
+                    - label: {id: al_row_1_time, clickable: false, text: "07:00", text_font: oswald_42, text_color: white, width: 140}
+                    - obj:
+                        width: 200
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        flex_grow: 1
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 2}
+                        widgets:
+                          - label: {id: al_row_1_name, clickable: false, text: "Alarm", text_font: oswald_24, text_color: white}
+                          - label: {id: al_row_1_meta, clickable: false, text: "", text_font: oswald_14, text_color: gray500}
+                    - label: {id: al_row_1_spk, clickable: false, text: $mdi_sofa, text_font: mdi_alarm_28, text_color: gray500}
+                    - label: {id: al_row_1_music, clickable: false, text: $mdi_bell, text_font: mdi_alarm_28, text_color: gray500}
+                    - button:
+                        id: al_row_1_tgbtn
+                        width: 72
+                        height: 40
+                        radius: 20
+                        bg_color: 0x2B3038
+                        border_width: 0
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_row_toggle, n: 1}}]
+                        widgets:
+                          - obj: {id: al_row_1_tg, clickable: false, align: LEFT_MID, x: 4, y: 0, width: 32, height: 32, radius: 16, bg_color: 0x9E9E9E, border_width: 0, pad_all: 0}
+              # ── Row 2 ──
+              - obj:
+                  id: al_row_2
+                  width: 100%
+                  height: 78
+                  bg_color: gray900
+                  bg_opa: 30%
+                  radius: 14
+                  border_width: 0
+                  pad_left: 16
+                  pad_right: 12
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 14}
+                  on_click: [{script.execute: {id: al_edit_open, n: 2}}]
+                  widgets:
+                    - label: {id: al_row_2_time, clickable: false, text: "--:--", text_font: oswald_42, text_color: white, width: 140}
+                    - obj:
+                        width: 200
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        flex_grow: 1
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 2}
+                        widgets:
+                          - label: {id: al_row_2_name, clickable: false, text: "Alarm", text_font: oswald_24, text_color: white}
+                          - label: {id: al_row_2_meta, clickable: false, text: "", text_font: oswald_14, text_color: gray500}
+                    - label: {id: al_row_2_spk, clickable: false, text: $mdi_sofa, text_font: mdi_alarm_28, text_color: gray500}
+                    - label: {id: al_row_2_music, clickable: false, text: $mdi_bell, text_font: mdi_alarm_28, text_color: gray500}
+                    - button:
+                        id: al_row_2_tgbtn
+                        width: 72
+                        height: 40
+                        radius: 20
+                        bg_color: 0x2B3038
+                        border_width: 0
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_row_toggle, n: 2}}]
+                        widgets:
+                          - obj: {id: al_row_2_tg, clickable: false, align: LEFT_MID, x: 4, y: 0, width: 32, height: 32, radius: 16, bg_color: 0x9E9E9E, border_width: 0, pad_all: 0}
+              # ── Row 3 ──
+              - obj:
+                  id: al_row_3
+                  width: 100%
+                  height: 78
+                  bg_color: gray900
+                  bg_opa: 30%
+                  radius: 14
+                  border_width: 0
+                  pad_left: 16
+                  pad_right: 12
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 14}
+                  on_click: [{script.execute: {id: al_edit_open, n: 3}}]
+                  widgets:
+                    - label: {id: al_row_3_time, clickable: false, text: "--:--", text_font: oswald_42, text_color: white, width: 140}
+                    - obj:
+                        width: 200
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        flex_grow: 1
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 2}
+                        widgets:
+                          - label: {id: al_row_3_name, clickable: false, text: "Alarm", text_font: oswald_24, text_color: white}
+                          - label: {id: al_row_3_meta, clickable: false, text: "", text_font: oswald_14, text_color: gray500}
+                    - label: {id: al_row_3_spk, clickable: false, text: $mdi_sofa, text_font: mdi_alarm_28, text_color: gray500}
+                    - label: {id: al_row_3_music, clickable: false, text: $mdi_bell, text_font: mdi_alarm_28, text_color: gray500}
+                    - button:
+                        id: al_row_3_tgbtn
+                        width: 72
+                        height: 40
+                        radius: 20
+                        bg_color: 0x2B3038
+                        border_width: 0
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_row_toggle, n: 3}}]
+                        widgets:
+                          - obj: {id: al_row_3_tg, clickable: false, align: LEFT_MID, x: 4, y: 0, width: 32, height: 32, radius: 16, bg_color: 0x9E9E9E, border_width: 0, pad_all: 0}
+              # ── Row 4 ──
+              - obj:
+                  id: al_row_4
+                  width: 100%
+                  height: 78
+                  bg_color: gray900
+                  bg_opa: 30%
+                  radius: 14
+                  border_width: 0
+                  pad_left: 16
+                  pad_right: 12
+                  scrollable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 14}
+                  on_click: [{script.execute: {id: al_edit_open, n: 4}}]
+                  widgets:
+                    - label: {id: al_row_4_time, clickable: false, text: "--:--", text_font: oswald_42, text_color: white, width: 140}
+                    - obj:
+                        width: 200
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        flex_grow: 1
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: START, pad_row: 2}
+                        widgets:
+                          - label: {id: al_row_4_name, clickable: false, text: "Alarm", text_font: oswald_24, text_color: white}
+                          - label: {id: al_row_4_meta, clickable: false, text: "", text_font: oswald_14, text_color: gray500}
+                    - label: {id: al_row_4_spk, clickable: false, text: $mdi_sofa, text_font: mdi_alarm_28, text_color: gray500}
+                    - label: {id: al_row_4_music, clickable: false, text: $mdi_bell, text_font: mdi_alarm_28, text_color: gray500}
+                    - button:
+                        id: al_row_4_tgbtn
+                        width: 72
+                        height: 40
+                        radius: 20
+                        bg_color: 0x2B3038
+                        border_width: 0
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_row_toggle, n: 4}}]
+                        widgets:
+                          - obj: {id: al_row_4_tg, clickable: false, align: LEFT_MID, x: 4, y: 0, width: 32, height: 32, radius: 16, bg_color: 0x9E9E9E, border_width: 0, pad_all: 0}
+
+        # ── ADD affordance (floating, bottom) ──
+        - button:
+            id: al_add_btn
+            align: BOTTOM_MID
+            y: -16
+            width: 240
+            height: 60
+            radius: 18
+            bg_color: 0x06222B
+            border_width: 1
+            border_color: 0x01B4DE
+            pad_all: 0
+            on_click: [{script.execute: al_add_new}]
+            widgets:
+              - obj:
+                  align: CENTER
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                  widgets:
+                    - label: {clickable: false, text: $mdi_plus, text_font: mdi_alarm_28, text_color: 0x01B4DE}
+                    - label: {clickable: false, text: "ADD ALARM", text_font: oswald_24, text_color: 0x01B4DE}
+        # Pager: bottom-right, shown only when >4 alarms (al_list_refresh
+        # toggles its visibility). Tap cycles a0..a3 ↔ a4..a5 so every alarm in the
+        # dynamic backend is reachable/editable within the no-scroll 4-row layout.
+        - button:
+            id: al_pager_btn
+            hidden: true
+            align: BOTTOM_RIGHT
+            x: -16
+            y: -16
+            width: 92
+            height: 60
+            radius: 18
+            bg_color: 0x14161B
+            border_width: 1
+            border_color: gray700
+            pad_all: 0
+            on_click: [{script.execute: al_pager_advance}]
+            widgets:
+              - obj:
+                  align: CENTER
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 6}
+                  widgets:
+                    - label: {id: al_pager_lbl, clickable: false, text: "1/2", text_font: oswald_20, text_color: gray400}
+                    - label: {clickable: false, text: $mdi_chevron_right, text_font: mdi_alarm_28, text_color: 0x01B4DE}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # alarm_edit_page — takeover (skip:true). ONE page: time + days + 3 CTAs.
+    # ═══════════════════════════════════════════════════════════════════════
+    - id: alarm_edit_page
+      skip: true
+      styles: page_style
+      widgets:
+        # Own header (back · title · enable toggle) — takeover hides the singleton bar.
+        - obj:
+            styles: shell_bar
+            align: TOP_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  styles: shell_zone
+                  width: $shell_side_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - button: {id: al_edit_back, align: CENTER, width: 56, height: 56, radius: 28, bg_color: very_dark_gray, border_width: 0, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_left, text_font: mdi_alarm_28, text_color: white}}],
+                               on_click: [{script.execute: takeover_exit}]}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_centre_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - label: {clickable: false, align: CENTER, text: "Alarm", styles: header_title}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_side_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - button:
+                        id: al_edit_en_btn
+                        align: CENTER
+                        width: 72
+                        height: 40
+                        radius: 20
+                        bg_color: 0x01B4DE
+                        border_width: 0
+                        pad_all: 0
+                        on_click: [{script.execute: al_edit_enable_toggle}]
+                        widgets:
+                          - obj: {id: al_edit_en_knob, clickable: false, align: RIGHT_MID, x: -4, y: 0, width: 32, height: 32, radius: 16, bg_color: 0xF2F0EB, border_width: 0, pad_all: 0}
+        - obj: {styles: shell_divider, align: TOP_MID, y: $shell_bar_h, width: 100%, height: 1}
+
+        # ── HH : MM steppers ([▲] value [▼] vertical), centred ──
+        - obj:
+            align: TOP_MID
+            y: 96
+            width: 560
+            height: 200
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 20}
+            widgets:
+              # HOUR
+              - obj:
+                  width: 150
+                  height: 200
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                  widgets:
+                    - button: {id: al_hour_up, width: 110, height: 50, radius: 14, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_up, text_font: mdi_alarm_28, text_color: gray400}}],
+                               on_click: [{script.execute: al_hour_inc}]}
+                    - label: {id: val_al_hour, clickable: false, text: "07", text_font: oswald_72, text_color: white}
+                    - button: {id: al_hour_down, width: 110, height: 50, radius: 14, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_down, text_font: mdi_alarm_28, text_color: gray400}}],
+                               on_click: [{script.execute: al_hour_dec}]}
+              - label: {clickable: false, text: ":", text_font: oswald_72, text_color: gray500}
+              # MIN
+              - obj:
+                  width: 150
+                  height: 200
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                  widgets:
+                    - button: {id: al_min_up, width: 110, height: 50, radius: 14, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_up, text_font: mdi_alarm_28, text_color: gray400}}],
+                               on_click: [{script.execute: al_min_inc}]}
+                    - label: {id: val_al_min, clickable: false, text: "00", text_font: oswald_72, text_color: white}
+                    - button: {id: al_min_down, width: 110, height: 50, radius: 14, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_down, text_font: mdi_alarm_28, text_color: gray400}}],
+                               on_click: [{script.execute: al_min_dec}]}
+
+        # ── REPEAT toggle + DAY chips (one-off unless repeat ticked, ) ──
+        - obj:
+            align: TOP_MID
+            y: 308
+            width: 688
+            height: 74
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+            widgets:
+              - button: {id: al_repeat_btn, width: 124, height: 64, radius: 16, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0,
+                         on_click: [{script.execute: al_repeat_toggle}],
+                         widgets: [{label: {id: al_repeat_lbl, clickable: false, align: CENTER, text: "ONCE", text_font: oswald_20, text_color: gray400}}]}
+              - label: {id: al_repeat_hint, clickable: false, text: "Rings once at the set time", text_font: oswald_20, text_color: gray500}
+              - button: {id: al_day_0, width: 64, height: 64, radius: 9999, bg_color: 0x10353F, border_width: 1, border_color: 0x01B4DE, pad_all: 0, on_click: [{script.execute: {id: al_day_toggle, d: 0}}], widgets: [{label: {id: al_day_0_l, clickable: false, align: CENTER, text: "M", text_font: oswald_24, text_color: white}}]}
+              - button: {id: al_day_1, width: 64, height: 64, radius: 9999, bg_color: 0x10353F, border_width: 1, border_color: 0x01B4DE, pad_all: 0, on_click: [{script.execute: {id: al_day_toggle, d: 1}}], widgets: [{label: {id: al_day_1_l, clickable: false, align: CENTER, text: "T", text_font: oswald_24, text_color: white}}]}
+              - button: {id: al_day_2, width: 64, height: 64, radius: 9999, bg_color: 0x10353F, border_width: 1, border_color: 0x01B4DE, pad_all: 0, on_click: [{script.execute: {id: al_day_toggle, d: 2}}], widgets: [{label: {id: al_day_2_l, clickable: false, align: CENTER, text: "W", text_font: oswald_24, text_color: white}}]}
+              - button: {id: al_day_3, width: 64, height: 64, radius: 9999, bg_color: 0x10353F, border_width: 1, border_color: 0x01B4DE, pad_all: 0, on_click: [{script.execute: {id: al_day_toggle, d: 3}}], widgets: [{label: {id: al_day_3_l, clickable: false, align: CENTER, text: "T", text_font: oswald_24, text_color: white}}]}
+              - button: {id: al_day_4, width: 64, height: 64, radius: 9999, bg_color: 0x10353F, border_width: 1, border_color: 0x01B4DE, pad_all: 0, on_click: [{script.execute: {id: al_day_toggle, d: 4}}], widgets: [{label: {id: al_day_4_l, clickable: false, align: CENTER, text: "F", text_font: oswald_24, text_color: white}}]}
+              - button: {id: al_day_5, width: 64, height: 64, radius: 9999, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0, on_click: [{script.execute: {id: al_day_toggle, d: 5}}], widgets: [{label: {id: al_day_5_l, clickable: false, align: CENTER, text: "S", text_font: oswald_24, text_color: gray400}}]}
+              - button: {id: al_day_6, width: 64, height: 64, radius: 9999, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0, on_click: [{script.execute: {id: al_day_toggle, d: 6}}], widgets: [{label: {id: al_day_6_l, clickable: false, align: CENTER, text: "S", text_font: oswald_24, text_color: gray400}}]}
+
+        # ── 3 CTA cards: SPEAKER · MUSIC · WHO ──
+        - obj:
+            align: TOP_MID
+            y: 396
+            width: 688
+            height: 172
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 16}
+            widgets:
+              - button:
+                  id: al_cta_speaker
+                  width: 218
+                  height: 172
+                  radius: 18
+                  bg_color: 0x14161B
+                  border_width: 1
+                  border_color: 0x2B3038
+                  pad_all: 0
+                  on_click: [{script.execute: al_speaker_open}]
+                  widgets:
+                    - label: {clickable: false, align: TOP_RIGHT, x: -12, y: 12, text: $mdi_chevron_right, text_font: mdi_alarm_28, text_color: gray500}
+                    - obj:
+                        clickable: false
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                        widgets:
+                          - label: {id: al_cta_spk_g, clickable: false, text: "${alarm_row_0_glyph}", text_font: mdi_alarm_40, text_color: ep_green}
+                          - label: {clickable: false, text: "SPEAKER", text_font: oswald_14, text_color: gray500}
+                          - label: {id: al_cta_spk_v, clickable: false, text: "${alarm_local_label}", text_font: oswald_20, text_color: white}
+              - button:
+                  id: al_cta_music
+                  width: 218
+                  height: 172
+                  radius: 18
+                  bg_color: 0x14161B
+                  border_width: 1
+                  border_color: 0x2B3038
+                  pad_all: 0
+                  on_click: [{script.execute: al_music_open}]
+                  widgets:
+                    - label: {clickable: false, align: TOP_RIGHT, x: -12, y: 12, text: $mdi_chevron_right, text_font: mdi_alarm_28, text_color: gray500}
+                    - obj:
+                        clickable: false
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_music, text_font: mdi_alarm_40, text_color: ep_orange}
+                          - label: {clickable: false, text: "MUSIC", text_font: oswald_14, text_color: gray500}
+                          - label: {id: al_cta_music_v, clickable: false, text: "Default Sound", text_font: oswald_20, text_color: white}
+              - button:
+                  id: al_cta_who
+                  width: 218
+                  height: 172
+                  radius: 18
+                  bg_color: 0x14161B
+                  border_width: 1
+                  border_color: 0x2B3038
+                  pad_all: 0
+                  on_click: [{script.execute: al_who_open}]
+                  widgets:
+                    - label: {clickable: false, align: TOP_RIGHT, x: -12, y: 12, text: $mdi_chevron_right, text_font: mdi_alarm_28, text_color: gray500}
+                    - obj:
+                        clickable: false
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_account, text_font: mdi_alarm_40, text_color: 0x01B4DE}
+                          - label: {clickable: false, text: "WHO", text_font: oswald_14, text_color: gray500}
+                          - label: {id: al_cta_who_v, clickable: false, text: "Anyone", text_font: oswald_20, text_color: white}
+
+        # ── WAKE VOLUME slider (per-alarm; moved off the speaker picker, .3) ──
+        - obj:
+            align: TOP_MID
+            y: 582
+            width: 688
+            height: 48
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 16}
+            widgets:
+              - label: {id: lbl_al_e_vol, clickable: false, text: "WAKE VOLUME · 40%", text_font: oswald_18, text_color: gray400, width: 260}
+              - slider: {id: al_e_vol_sld, flex_grow: 1, height: 18, min_value: 0, max_value: 100, value: 40, on_value: [{script.execute: al_e_vol_set}]}
+
+        # ── Delete / Cancel / Save bar (Delete shown only when editing) ──
+        - obj:
+            align: BOTTOM_MID
+            y: -16
+            width: 688
+            height: 64
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 16}
+            widgets:
+              - button: {id: al_edit_del_btn, hidden: true, width: 200, height: 64, radius: 18, bg_color: 0x2A1416, border_width: 1, border_color: 0x7A2F2F, pad_all: 0,
+                         flex_grow: 1, on_click: [{script.execute: al_edit_delete}],
+                         widgets: [{label: {clickable: false, align: CENTER, text: "DELETE", text_font: oswald_24, text_color: 0xE5736B}}]}
+              - button: {id: al_edit_cancel, width: 336, height: 64, radius: 18, bg_color: 0x14161B, border_width: 1, border_color: 0x2B3038, pad_all: 0,
+                         flex_grow: 1, on_click: [{script.execute: takeover_exit}],
+                         widgets: [{label: {clickable: false, align: CENTER, text: "CANCEL", text_font: oswald_24, text_color: gray400}}]}
+              - button: {id: al_edit_save_btn, width: 336, height: 64, radius: 18, bg_color: 0x10353F, border_width: 1, border_color: 0x01B4DE, pad_all: 0,
+                         flex_grow: 1, on_click: [{script.execute: al_edit_save}],
+                         widgets: [{label: {clickable: false, align: CENTER, text: "SAVE", text_font: oswald_24, text_color: white}}]}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # alarm_speaker_page — takeover. Sonos picker (room rows) + WAKE VOLUME.
+    # ═══════════════════════════════════════════════════════════════════════
+    - id: alarm_speaker_page
+      skip: true
+      styles: page_style
+      widgets:
+        - obj:
+            styles: shell_bar
+            align: TOP_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  styles: shell_zone
+                  width: $shell_side_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - button: {id: al_spk_back, align: CENTER, width: 56, height: 56, radius: 28, bg_color: very_dark_gray, border_width: 0, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_left, text_font: mdi_alarm_28, text_color: white}}],
+                               on_click: [{lvgl.page.show: alarm_edit_page}]}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_centre_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets: [{label: {clickable: false, align: CENTER, text: "Alarm Speaker", styles: header_title}}]
+              - obj: {styles: shell_zone, width: $shell_side_w, height: $shell_zone_h, scrollable: false}
+        - obj: {styles: shell_divider, align: TOP_MID, y: $shell_bar_h, width: 100%, height: 1}
+
+        # Sonos rows (local room first, then the roster rows).
+        - obj:
+            align: TOP_MID
+            y: 84
+            width: 688
+            height: 420
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: COLUMN, flex_align_main: START, flex_align_cross: CENTER, pad_row: 6}
+            widgets:
+              - button: {id: al_spk_row_0, width: 100%, height: 64, radius: 14, bg_color: gray900, bg_opa: 30%, border_width: 0, pad_left: 18, pad_right: 18,
+                         on_click: [{script.execute: {id: al_speaker_pick, ent: "media_player.${alarm_row_0_slug}"}}],
+                         layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16},
+                         widgets: [
+                           {label: {id: ic_al_spk_row_0, clickable: false, text: "${alarm_row_0_glyph}", text_font: mdi_alarm_28, text_color: gray400}},
+                           {label: {id: name_al_spk_row_0, clickable: false, text: "${alarm_row_0_label}", text_font: oswald_24, text_color: white, flex_grow: 1}},
+                           {label: {id: al_spk_check_0, clickable: false, text: $mdi_check_circle, text_font: mdi_alarm_28, text_color: 0x01B4DE}}]}
+              - button: {id: al_spk_row_1, width: 100%, height: 64, radius: 14, bg_color: gray900, bg_opa: 30%, border_width: 0, pad_left: 18, pad_right: 18,
+                         on_click: [{script.execute: {id: al_speaker_pick, ent: "media_player.${alarm_row_1_slug}"}}],
+                         layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16},
+                         widgets: [
+                           {label: {id: ic_al_spk_row_1, clickable: false, text: "${alarm_row_1_glyph}", text_font: mdi_alarm_28, text_color: gray400}},
+                           {label: {id: name_al_spk_row_1, clickable: false, text: "${alarm_row_1_label}", text_font: oswald_24, text_color: white, flex_grow: 1}},
+                           {label: {id: al_spk_check_1, clickable: false, text: $mdi_circle_outline, text_font: mdi_alarm_28, text_color: 0x3A3F48}}]}
+              - button: {id: al_spk_row_2, width: 100%, height: 64, radius: 14, bg_color: gray900, bg_opa: 30%, border_width: 0, pad_left: 18, pad_right: 18,
+                         on_click: [{script.execute: {id: al_speaker_pick, ent: "media_player.${alarm_row_2_slug}"}}],
+                         layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16},
+                         widgets: [
+                           {label: {id: ic_al_spk_row_2, clickable: false, text: "${alarm_row_2_glyph}", text_font: mdi_alarm_28, text_color: gray400}},
+                           {label: {id: name_al_spk_row_2, clickable: false, text: "${alarm_row_2_label}", text_font: oswald_24, text_color: white, flex_grow: 1}},
+                           {label: {id: al_spk_check_2, clickable: false, text: $mdi_circle_outline, text_font: mdi_alarm_28, text_color: 0x3A3F48}}]}
+              - button: {id: al_spk_row_3, width: 100%, height: 64, radius: 14, bg_color: gray900, bg_opa: 30%, border_width: 0, pad_left: 18, pad_right: 18,
+                         on_click: [{script.execute: {id: al_speaker_pick, ent: "media_player.${alarm_row_3_slug}"}}],
+                         layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16},
+                         widgets: [
+                           {label: {id: ic_al_spk_row_3, clickable: false, text: "${alarm_row_3_glyph}", text_font: mdi_alarm_28, text_color: gray400}},
+                           {label: {id: name_al_spk_row_3, clickable: false, text: "${alarm_row_3_label}", text_font: oswald_24, text_color: white, flex_grow: 1}},
+                           {label: {id: al_spk_check_3, clickable: false, text: $mdi_circle_outline, text_font: mdi_alarm_28, text_color: 0x3A3F48}}]}
+              - button: {id: al_spk_row_4, width: 100%, height: 64, radius: 14, bg_color: gray900, bg_opa: 30%, border_width: 0, pad_left: 18, pad_right: 18,
+                         on_click: [{script.execute: {id: al_speaker_pick, ent: "media_player.${alarm_row_4_slug}"}}],
+                         layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16},
+                         widgets: [
+                           {label: {id: ic_al_spk_row_4, clickable: false, text: "${alarm_row_4_glyph}", text_font: mdi_alarm_28, text_color: gray400}},
+                           {label: {id: name_al_spk_row_4, clickable: false, text: "${alarm_row_4_label}", text_font: oswald_24, text_color: white, flex_grow: 1}},
+                           {label: {id: al_spk_check_4, clickable: false, text: $mdi_circle_outline, text_font: mdi_alarm_28, text_color: 0x3A3F48}}]}
+              # Kitchen 2 — live Sonos zone (friendly_name "Kitchen") that is also a
+              # Multi-Room row on page-main. Added for zone-list parity so an alarm
+              # can target it. Uses the same fridge glyph as the primary Kitchen.
+              - button: {id: al_spk_row_5, width: 100%, height: 64, radius: 14, bg_color: gray900, bg_opa: 30%, border_width: 0, pad_left: 18, pad_right: 18,
+                         on_click: [{script.execute: {id: al_speaker_pick, ent: "media_player.${alarm_row_5_slug}"}}],
+                         layout: {type: flex, flex_flow: ROW, flex_align_main: START, flex_align_cross: CENTER, pad_column: 16},
+                         widgets: [
+                           {label: {id: ic_al_spk_row_5, clickable: false, text: "${alarm_row_5_glyph}", text_font: mdi_alarm_28, text_color: gray400}},
+                           {label: {id: name_al_spk_row_5, clickable: false, text: "${alarm_row_5_label}", text_font: oswald_24, text_color: white, flex_grow: 1}},
+                           {label: {id: al_spk_check_5, clickable: false, text: $mdi_circle_outline, text_font: mdi_alarm_28, text_color: 0x3A3F48}}]}
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # alarm_music_page — takeover. SpotifyPlus cover grid + Default Sound.
+    # ═══════════════════════════════════════════════════════════════════════
+    - id: alarm_music_page
+      skip: true
+      styles: page_style
+      widgets:
+        - obj:
+            styles: shell_bar
+            align: TOP_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  styles: shell_zone
+                  width: $shell_side_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - button: {id: al_mus_back, align: CENTER, width: 56, height: 56, radius: 28, bg_color: very_dark_gray, border_width: 0, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_left, text_font: mdi_alarm_28, text_color: white}}],
+                               on_click: [{lvgl.page.show: alarm_edit_page}]}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_centre_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets: [{label: {clickable: false, align: CENTER, text: "Wake Music", styles: header_title}}]
+              - obj: {styles: shell_zone, width: $shell_side_w, height: $shell_zone_h, scrollable: false}
+        - obj: {styles: shell_divider, align: TOP_MID, y: $shell_bar_h, width: 100%, height: 1}
+
+        # 4×2 grid of selectable tiles. Tile 0 = Default Sound; 1..7 reuse the
+        # SpotifyPlus playlist names (page-media's spotify_playlist_names paints the
+        # captions on its own tiles; here we mirror the same playlist_ids/idx scheme).
+        - obj:
+            align: TOP_MID
+            y: 88
+            width: 688
+            height: 480
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1), FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1)]
+              pad_column: 14
+              pad_row: 14
+            widgets:
+              - button:
+                  id: al_mus_default
+                  grid_cell_column_pos: 0
+                  grid_cell_row_pos: 0
+                  grid_cell_x_align: STRETCH
+                  grid_cell_y_align: STRETCH
+                  radius: 14
+                  bg_color: 0x23262C
+                  border_width: 0
+                  pad_all: 0
+                  on_click: [{script.execute: {id: al_music_pick_tile, idx: -1}}]
+                  widgets:
+                    - obj:
+                        clickable: false
+                        align: CENTER
+                        width: SIZE_CONTENT
+                        height: SIZE_CONTENT
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+                        widgets:
+                          - label: {clickable: false, text: $mdi_bell_ring, text_font: mdi_alarm_40, text_color: gray500}
+                          - label: {clickable: false, text: "Default Sound", text_font: oswald_18, text_color: gray400}
+              # Playlist tiles (mirror page-media's pl_tile colour-gradient scheme).
+              - button: {id: al_mus_0, grid_cell_column_pos: 1, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, radius: 14, bg_color: 0x6A4FB0, border_width: 0, pad_all: 0, on_click: [{script.execute: {id: al_music_pick_tile, idx: 0}}], widgets: [{label: {id: al_mus_0_name, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "—", text_font: oswald_18, text_color: white}}]}
+              - button: {id: al_mus_1, grid_cell_column_pos: 2, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, radius: 14, bg_color: 0x1F6B63, border_width: 0, pad_all: 0, on_click: [{script.execute: {id: al_music_pick_tile, idx: 1}}], widgets: [{label: {id: al_mus_1_name, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "—", text_font: oswald_18, text_color: white}}]}
+              - button: {id: al_mus_2, grid_cell_column_pos: 3, grid_cell_row_pos: 0, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, radius: 14, bg_color: 0x6B4A1F, border_width: 0, pad_all: 0, on_click: [{script.execute: {id: al_music_pick_tile, idx: 2}}], widgets: [{label: {id: al_mus_2_name, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "—", text_font: oswald_18, text_color: white}}]}
+              - button: {id: al_mus_3, grid_cell_column_pos: 0, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, radius: 14, bg_color: 0x2A3F6B, border_width: 0, pad_all: 0, on_click: [{script.execute: {id: al_music_pick_tile, idx: 3}}], widgets: [{label: {id: al_mus_3_name, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "—", text_font: oswald_18, text_color: white}}]}
+              - button: {id: al_mus_4, grid_cell_column_pos: 1, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, radius: 14, bg_color: 0x7A2F57, border_width: 0, pad_all: 0, on_click: [{script.execute: {id: al_music_pick_tile, idx: 4}}], widgets: [{label: {id: al_mus_4_name, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "—", text_font: oswald_18, text_color: white}}]}
+              - button: {id: al_mus_5, grid_cell_column_pos: 2, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, radius: 14, bg_color: 0x2F6B3A, border_width: 0, pad_all: 0, on_click: [{script.execute: {id: al_music_pick_tile, idx: 5}}], widgets: [{label: {id: al_mus_5_name, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "—", text_font: oswald_18, text_color: white}}]}
+              - button: {id: al_mus_6, grid_cell_column_pos: 3, grid_cell_row_pos: 1, grid_cell_x_align: STRETCH, grid_cell_y_align: STRETCH, radius: 14, bg_color: 0x8A3320, border_width: 0, pad_all: 0, on_click: [{script.execute: {id: al_music_pick_tile, idx: 6}}], widgets: [{label: {id: al_mus_6_name, clickable: false, align: BOTTOM_LEFT, x: 10, y: -8, text: "—", text_font: oswald_18, text_color: white}}]}
+              # Only 7 playlist tiles fit (4×2 grid, cell 0,0 = Default Sound), so we
+              # expose the first 7 SpotifyPlus favourites (idx 0..6). An 8th would
+              # overflow — acceptable, the Music picker is "pick from the top of the
+              # favourites or Default", not the full library.
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # alarm_who_page — takeover. Person photos → al_e_person.
+    # ═══════════════════════════════════════════════════════════════════════
+    - id: alarm_who_page
+      skip: true
+      styles: page_style
+      widgets:
+        - obj:
+            styles: shell_bar
+            align: TOP_MID
+            y: 0
+            width: 100%
+            height: $shell_bar_h
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_BETWEEN, flex_align_cross: CENTER, pad_column: 0}
+            widgets:
+              - obj:
+                  styles: shell_zone
+                  width: $shell_side_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets:
+                    - button: {id: al_who_back, align: CENTER, width: 56, height: 56, radius: 28, bg_color: very_dark_gray, border_width: 0, pad_all: 0,
+                               widgets: [{label: {clickable: false, align: CENTER, text: $mdi_chevron_left, text_font: mdi_alarm_28, text_color: white}}],
+                               on_click: [{lvgl.page.show: alarm_edit_page}]}
+              - obj:
+                  styles: shell_zone
+                  width: $shell_centre_w
+                  height: $shell_zone_h
+                  scrollable: false
+                  widgets: [{label: {clickable: false, align: CENTER, text: "Only if home", styles: header_title}}]
+              - obj: {styles: shell_zone, width: $shell_side_w, height: $shell_zone_h, scrollable: false}
+        - obj: {styles: shell_divider, align: TOP_MID, y: $shell_bar_h, width: 100%, height: 1}
+
+        - obj:
+            align: TOP_MID
+            y: 150
+            width: 688
+            height: 220
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 30}
+            widgets:
+              # Anyone (glyph-only avatar; selected by default → al_e_person == "").
+              - obj:
+                  width: 150
+                  height: 200
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 14}
+                  widgets:
+                    - button:
+                        id: al_who_anyone
+                        width: 150
+                        height: 150
+                        radius: 9999
+                        bg_color: gray800
+                        border_width: 3
+                        border_color: 0x01B4DE
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_who_pick, ent: ""}}]
+                        widgets:
+                          - label: {clickable: false, align: CENTER, text: $mdi_account_multiple, text_font: mdi_alarm_40, text_color: gray400}
+                    - label: {clickable: false, text: "Anyone", text_font: oswald_24, text_color: white}
+              # Person 1
+              - obj:
+                  width: 150
+                  height: 200
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 14}
+                  widgets:
+                    - button:
+                        id: al_who_p1
+                        width: 150
+                        height: 150
+                        radius: 9999
+                        clip_corner: true
+                        bg_color: gray800
+                        border_width: 2
+                        border_color: gray700
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_who_pick, ent: "${person_1_entity}"}}]
+                        widgets:
+                          - image: {id: img_al_who_p1, hidden: true, src: al_who_p1_img, align: CENTER, clickable: false}
+                          - label: {id: ic_al_who_p1, clickable: false, align: CENTER, text: $mdi_account, text_font: mdi_alarm_40, text_color: gray500}
+                    - label: {clickable: false, text: "${person_1_name}", text_font: oswald_24, text_color: white}
+              # Person 2
+              - obj:
+                  width: 150
+                  height: 200
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 14}
+                  widgets:
+                    - button:
+                        id: al_who_p2
+                        width: 150
+                        height: 150
+                        radius: 9999
+                        clip_corner: true
+                        bg_color: gray800
+                        border_width: 2
+                        border_color: gray700
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_who_pick, ent: "${person_2_entity}"}}]
+                        widgets:
+                          - image: {id: img_al_who_p2, hidden: true, src: al_who_p2_img, align: CENTER, clickable: false}
+                          - label: {id: ic_al_who_p2, clickable: false, align: CENTER, text: $mdi_account, text_font: mdi_alarm_40, text_color: gray500}
+                    - label: {clickable: false, text: "${person_2_name}", text_font: oswald_24, text_color: white}
+              # Person 3
+              - obj:
+                  width: 150
+                  height: 200
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  clickable: false
+                  layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 14}
+                  widgets:
+                    - button:
+                        id: al_who_p3
+                        width: 150
+                        height: 150
+                        radius: 9999
+                        clip_corner: true
+                        bg_color: gray800
+                        border_width: 2
+                        border_color: gray700
+                        pad_all: 0
+                        on_click: [{script.execute: {id: al_who_pick, ent: "${person_3_entity}"}}]
+                        widgets:
+                          - image: {id: img_al_who_p3, hidden: true, src: al_who_p3_img, align: CENTER, clickable: false}
+                          - label: {id: ic_al_who_p3, clickable: false, align: CENTER, text: $mdi_account, text_font: mdi_alarm_40, text_color: gray500}
+                    - label: {clickable: false, text: "${person_3_name}", text_font: oswald_24, text_color: white}
+
+        - label: {clickable: false, align: BOTTOM_MID, y: -28, text: "PHOTOS FROM EACH PERSON ENTITY PICTURE", text_font: oswald_14, text_color: gray500}
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # GLOBAL RINGING OVERLAY (.6) — top_layer, hidden until alarm_ringing set.
+  # Shows over WHATEVER page is active (any panel). Snooze / Dismiss write back.
+  # ═════════════════════════════════════════════════════════════════════════
+  top_layer:
+    widgets:
+      - obj:
+          id: alarm_ringing_overlay
+          hidden: true
+          align: CENTER
+          x: 0
+          y: 0
+          width: 100%
+          height: 100%
+          radius: 0
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          bg_color: 0x08090B
+          bg_opa: 92%
+          layout: {type: flex, flex_flow: COLUMN, flex_align_main: CENTER, flex_align_cross: CENTER, pad_row: 8}
+          widgets:
+            - obj: {clickable: false, width: 18, height: 18, radius: 9, bg_color: 0x01B4DE, border_width: 0, pad_all: 0, shadow_color: 0x01B4DE, shadow_width: 18, shadow_spread: 2}
+            # width:100% + text_align:CENTER → deterministic centring even after the
+            # labels are repainted at runtime (LVGL flex won't re-centre a SIZE_CONTENT
+            # label after lv_label_set_text — same fix as the energy node values, mv8).
+            - label: {id: lbl_al_ring_time, clickable: false, width: 100%, text_align: CENTER, text: "07:00", text_font: oswald_72, text_color: white}
+            - label: {id: lbl_al_ring_name, clickable: false, width: 100%, text_align: CENTER, text: "WAKE", text_font: oswald_36, text_color: 0x01B4DE}
+            - label: {id: lbl_al_ring_target, clickable: false, width: 100%, text_align: CENTER, text: "${alarm_local_label}", text_font: oswald_18, text_color: gray500}
+            - obj:
+                clickable: false
+                width: SIZE_CONTENT
+                height: SIZE_CONTENT
+                bg_opa: TRANSP
+                border_width: 0
+                pad_top: 32
+                pad_bottom: 0
+                pad_left: 0
+                pad_right: 0
+                scrollable: false
+                layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 22}
+                widgets:
+                  - button:
+                      id: al_ring_snooze_btn
+                      width: 220
+                      height: 96
+                      radius: 20
+                      bg_color: 0x14161B
+                      border_width: 1
+                      border_color: 0x2B3038
+                      pad_all: 0
+                      on_click: [{script.execute: al_ring_snooze}]
+                      widgets:
+                        - obj:
+                            clickable: false
+                            align: CENTER
+                            width: SIZE_CONTENT
+                            height: SIZE_CONTENT
+                            bg_opa: TRANSP
+                            border_width: 0
+                            pad_all: 0
+                            scrollable: false
+                            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 12}
+                            widgets:
+                              - label: {clickable: false, text: $mdi_alarm_snooze, text_font: mdi_alarm_40, text_color: gray400}
+                              - label: {clickable: false, text: "SNOOZE", text_font: oswald_24, text_color: gray400}
+                  - button:
+                      id: al_ring_dismiss_btn
+                      width: 220
+                      height: 96
+                      radius: 20
+                      bg_color: 0x06222B
+                      border_width: 1
+                      border_color: 0x01B4DE
+                      pad_all: 0
+                      on_click: [{script.execute: al_ring_dismiss}]
+                      widgets:
+                        - obj:
+                            clickable: false
+                            align: CENTER
+                            width: SIZE_CONTENT
+                            height: SIZE_CONTENT
+                            bg_opa: TRANSP
+                            border_width: 0
+                            pad_all: 0
+                            scrollable: false
+                            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 12}
+                            widgets:
+                              - label: {clickable: false, text: $mdi_check, text_font: mdi_alarm_40, text_color: 0x01B4DE}
+                              - label: {clickable: false, text: "DISMISS", text_font: oswald_24, text_color: 0x01B4DE}
+
+# Drive the ringing-overlay big TIME label off the ringing alarm's time. The
+# ringing state is the alarm id; find its row in a0..a5 and show field 1 (time).
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: 'return !lv_obj_has_flag(id(alarm_ringing_overlay), LV_OBJ_FLAG_HIDDEN);'
+          then:
+            - lambda: |-
+                std::string r = id(al_ringing_ha).state;
+                if (r.empty()) return;
+                std::string rows[6] = { id(al_a0), id(al_a1), id(al_a2), id(al_a3), id(al_a4), id(al_a5) };
+                for (int i = 0; i < 6; i++) {
+                  std::string raw = rows[i]; if (raw.empty()) continue;
+                  size_t p = raw.find('|'); std::string aid = (p==std::string::npos)?raw:raw.substr(0,p);
+                  if (aid != r) continue;
+                  std::string rest = (p==std::string::npos)?std::string(""):raw.substr(p+1);
+                  size_t p2 = rest.find('|'); std::string t = (p2==std::string::npos)?rest:rest.substr(0,p2);
+                  if (t.size() >= 5) lv_label_set_text(id(lbl_al_ring_time), t.substr(0,5).c_str());
+                  break;
+                }

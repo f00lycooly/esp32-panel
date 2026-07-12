@@ -1,0 +1,76 @@
+# ───────────────────────────────────────────────────────────────────────────
+# group_card.yaml — Rooms Overview grid card (glyph variant) —  4b
+#
+# A now-playing/idle card for one Sonos GROUP or idle room: a state-coloured
+# speaker glyph (top-left), a title + sub line, and a volume bar (bottom). The
+# controlled card (gc0) is a richer inline variant with album art; gc1..gc4 use
+# this glyph-only widget (hybrid art decision — art on the controlled card only).
+#
+# Painted entirely by mr_refresh; tap switches which group the panel controls
+# (gc_tap reads gc_coord[slot]). Children are non-clickable (LVGL v9 obj-clickable
+# trap); absolute-aligned (NOT flex) to avoid the flex-on-button gotcha.
+#
+# NOTE: block (not flow) mappings below — ${uid}_x in a flow mapping `{…}` breaks
+# the YAML parser (a value starting `${` reads as a nested flow map). Block is safe.
+#
+# ids: ${uid} (button), ${uid}_glyph, ${uid}_title, ${uid}_sub, ${uid}_vol.
+# vars: uid, col, row, slot (display-slot index passed to gc_tap).
+# ───────────────────────────────────────────────────────────────────────────
+button:
+  id: ${uid}
+  grid_cell_column_pos: ${col}
+  grid_cell_row_pos: ${row}
+  grid_cell_x_align: STRETCH
+  grid_cell_y_align: STRETCH
+  bg_color: gray900
+  radius: 16
+  border_width: 0
+  pad_all: 10
+  scrollable: false
+  hidden: true
+  widgets:
+    - label:
+        id: ${uid}_glyph
+        clickable: false
+        align: TOP_LEFT
+        text: $mdi_speaker_multiple
+        text_font: mdi_main_28
+        text_color: gray500
+    - label:
+        id: ${uid}_title
+        clickable: false
+        align: TOP_LEFT
+        x: 44
+        y: 0
+        text: ""
+        text_font: oswald_20
+        text_color: white
+        width: 252
+        long_mode: DOT
+    - label:
+        id: ${uid}_sub
+        clickable: false
+        align: TOP_LEFT
+        x: 44
+        y: 28
+        text: ""
+        text_font: oswald_14
+        text_color: gray400
+        width: 252
+        long_mode: DOT
+    - bar:
+        id: ${uid}_vol
+        clickable: false
+        align: BOTTOM_MID
+        y: -2
+        width: 296
+        height: 6
+        min_value: 0
+        max_value: 100
+        value: 0
+        indicator:
+          bg_color: ep_blue
+  on_click:
+    - script.execute:
+        id: gc_tap
+        slot: ${slot}

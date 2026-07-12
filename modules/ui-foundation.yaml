@@ -1,0 +1,154 @@
+# ESP32-P4 wall panel — UI foundation package
+#
+# Included as a package by ../waveshare-p4-86-panel.yaml on top of the local,
+# known-working hardware package. This file owns the device core only:
+#   - Project metadata (name, friendly_name, encryption)
+#   - Connectivity (api, wifi, captive_portal) + connectivity globals
+#   - Logger, image defaults, HA time source
+#   - Five library package includes (ota, sensors_base, theme, popup, loading)
+#     and the time_update hook stub. The info page is an lvgl page whose include
+#     position sets its swipe-ring slot, so it is included by the composition
+#     root (waveshare-p4-86-panel.yaml) last, not here.
+#   - Theme/font substitutions consumed by the library packages
+# It composes with assist.yaml (voice/audio stack, on_boot) and the per-page
+# packages (ui-shared.yaml + page-*.yaml) — no LVGL pages or voice stack here.
+#
+# secrets.yaml must define: wifi_ssid, wifi_password, esphome_api_key
+
+# Panel identity (name, friendly_name, project_name, project_version,
+# wifi_fallback_pwd) is intentionally NOT defined here — it is per-device and is
+# supplied by the composition root (waveshare-p4-86-panel.yaml) so a new panel
+# can include this shared foundation unchanged and bind its own identity from
+# substitutions. This file only consumes ${name},
+# ${friendly_name}, ${project_name}, ${project_version}, ${wifi_fallback_pwd}.
+substitutions:
+###### Fonts / UI defaults (referenced by library packages) ######
+# Library packages (sensors_base, info, popup, loading) reference $text_font and the
+# placeholder tile below uses it too. nunito_20 is defined in common/theme/fonts.yaml.
+# The icon font ($icon_font) + per-widget colors get added with the theme/card work
+# when the widgets that consume them land.
+  text_font: nunito_20
+# Widen the Nunito glyph coverage (library default is GF_Latin_Kernel) so the
+# degree sign and extended punctuation used by the climate/tariff cards render.
+# This is the documented extension point in common/theme/fonts.yaml.
+  glyphsets: GF_Latin_Core
+# Popup auto-close timeout consumed by ui/popup/popup_system.yaml.
+  popup_timeout_seconds: "120"
+
+###### Display-capture default ######
+# Backstop only — keeps ${capture_mode} defined if a device file forgets to set
+# it. The AUTHORITATIVE value is the device top-level substitution: each panel
+# sets capture_mode "on" (+ includes modules/display-capture.yaml) or "off". Page
+# modules read ${capture_mode} to choose capture/on/<page>.yaml vs the inert
+# capture/off/<page>.yaml; ESPHome resolves that include-path substitution from
+# the device top level, so this package-level value is a fallback, not the lever.
+  capture_mode: "off"
+
+###### Theme overrides (defaults in common/theme/index.yaml) ######
+# Lean dark + green accent. Override here without forking the library.
+  button_on_color: "ep_orange"        # tile background when entity is on
+  button_off_color: "very_dark_gray"  # tile background when off
+  icon_on_color: "yellow"
+  icon_off_color: "gray"
+  label_on_color: "white"
+  label_off_color: "gray"
+
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+
+  project:
+    name: ${project_name}
+    version: ${project_version}
+
+api:
+  encryption:
+    key: !secret esphome_api_key
+  # Headroom above the default of 5. Everything on the HA host shares
+  # one source IP — the HA integration, a re-auth flow, the ESPHome dashboard, and any
+  # `esphome logs`/OTA session. A handshake-failure retry storm (e.g. a key mismatch or
+  # reboot) can churn through slots faster than they free and deadlock the pool, locking
+  # out even a valid connection until a reboot. 10 absorbs that burst; cheap on the P4.
+  max_connections: 10
+  on_client_connected:
+    - lambda: id(api_connection) = true;
+  on_client_disconnected:
+    - lambda: id(api_connection) = false;
+
+# WiFi kept locally (not via common/wifi.yaml) — we want power_save tuning,
+# native roaming, and a hardcoded fallback password.
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  power_save_mode: NONE
+  enable_btm: true
+  enable_rrm: true
+  ap:
+    ssid: ${name}
+    password: ${wifi_fallback_pwd}
+  on_connect:
+    - lambda: id(wifi_connection) = true;
+    - switch.turn_on: audio_amplifier
+  on_disconnect:
+    - lambda: id(wifi_connection) = false;
+
+captive_portal:
+
+# Library packages use logger.log actions throughout; a logger component must exist.
+# Production default is INFO: DEBUG/VERBOSE logger.log calls scattered through
+# the media/climate paths are then compiled out, dropping retained format strings and
+# serial/API noise on the P4. A build variant can raise verbosity by overriding
+# ${log_level} (e.g. DEBUG) in its device file — no shared-module edit needed.
+logger:
+  level: ${log_level}
+  logs:
+    lvgl: info
+  hardware_uart: UART0
+
+# Byte order for images loaded in this file and the included packages (loading splash,
+# popup hue/kelvin rings). The P4 panel display expects little_endian.
+image:
+  defaults:
+    byte_order: little_endian
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+packages:
+  # OTA with LVGL progress overlay
+  ota_screen: !include ../esphome-modular-lvgl-buttons/common/ota.yaml
+  # WiFi signal, IP/SSID/MAC, CPU temp, version, build timestamp, restart button
+  sensors: !include ../esphome-modular-lvgl-buttons/common/sensors_base.yaml
+  # Palette, fonts, MDI glyphs, LVGL style_definitions
+  theme: !include ../esphome-modular-lvgl-buttons/common/theme/index.yaml
+  # Popup overlay infrastructure (needed for light/climate detail pages)
+  popup_system: !include ../esphome-modular-lvgl-buttons/ui/popup/popup_system.yaml
+  # Boot splash with ESPHome logo. (loading_page is a top_layer overlay, not an
+  # lvgl page, so its include position does not affect swipe-page order.)
+  loading_screen: !include ../esphome-modular-lvgl-buttons/pages/loading.yaml
+  # NOTE: info_screen (the WiFi/MAC/IP/version page) is an lvgl *page* and so its
+  # include position sets its slot in the swipe ring. It is intentionally NOT
+  # included here — the composition root (waveshare-p4-86-panel.yaml) includes
+  # it last, after the page packages, so main_page stays first and info sits at
+  # the end of the swipe order. Reached directly via the settings cog on main.
+
+# Stub for library components that hook into the per-minute time_update script
+script:
+  - id: time_update
+    then:
+      - lambda: |-
+          // No operation — extended by library packages if needed
+
+globals:
+  - id: wifi_connection
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: api_connection
+    type: bool
+    restore_value: false
+    initial_value: "false"

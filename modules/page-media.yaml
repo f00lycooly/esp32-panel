@@ -1,0 +1,1796 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# page-media.yaml — Media page package for the panel.
+# Included as a package by waveshare-p4-86-panel.yaml.
+#
+# Owns: the media_page LVGL page (transport card + 3×3 device-selector grid),
+# the active_media_player global, the refresh_device_sel highlight script, the
+# media_volume sensor, and the four active-media text_sensors
+# (state / title / device_name / active-player sync mirror).
+#
+# Cross-package IDs (resolved at package merge): nav_tile/card/header_title/
+# page_style styles, ep_blue/very_dark_gray/gray500 colours, nunito_*/mdi_*
+# fonts and glyph substitutions (library packages), main_page (page-main).
+# ─────────────────────────────────────────────────────────────────────────────
+
+font:
+  # ─── Page-local glyphs for the Pick Music + Browse takeovers (.3/.4) ───
+  # Every $mdi_* used by pick_music_page / browse_page is declared HERE (the
+  # contract requires each page-*.yaml to own its glyphs; ui-shared's mdi fonts
+  # have FIXED glyph lists we must not edit). 28px = header chevron + category
+  # tile glyphs; 40px = larger cover placeholder glyphs.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_media_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_chevron_left
+      - $mdi_playlist_music
+      - $mdi_account_music
+      - $mdi_album
+      - $mdi_history
+      - $mdi_heart
+      - $mdi_shape
+      - $mdi_speaker             # Rooms-modal tile glyph (otg redesign / Option B)
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_media_40
+    size: 40
+    bpp: 4
+    glyphs:
+      - $mdi_music
+      - $mdi_account
+      - $mdi_compass
+
+script:
+  # Rooms modal: paint each tile from the
+  # staged-selection vector with a NO-LEGEND visual: coordinator (index 0) = SOLID
+  # ep_blue + dark caption; other staged = faint tint + ep_blue OUTLINE; unstaged =
+  # dark. The live play/pause glyph is driven separately by apply_room_status.
+  - id: refresh_device_sel
+    then:
+      - lambda: |-
+          auto &v = id(staged_players);
+          auto idx = [&](const char* p) -> int {
+            for (size_t i = 0; i < v.size(); i++) if (v[i] == p) return (int)i;
+            return -1;
+          };
+          // otg / Option B: gradient cards. Each state is a VER gradient (bg_color
+          // top → bg_grad_color bottom) so tiles read as cards on the vdg sheet.
+          // Coordinator = ep_blue gradient + HUB chip + dark glyph/caption; member
+          // = blue-tint gradient + 2px ep_blue outline; idle = slate gradient.
+          auto grad = [](lv_obj_t* o, uint32_t top, uint32_t bot){
+            lv_obj_set_style_bg_color(o, lv_color_hex(top), 0);
+            lv_obj_set_style_bg_grad_color(o, lv_color_hex(bot), 0);
+            lv_obj_set_style_bg_grad_dir(o, LV_GRAD_DIR_VER, 0);
+          };
+          auto mark = [&](lv_obj_t* tile, lv_obj_t* cap, lv_obj_t* ic, lv_obj_t* chip, const char* player){
+            int i = idx(player);
+            if (i == 0) {                                  // coordinator: ep_blue gradient + chip
+              grad(tile, 0x06CCF5, 0x018FB0);
+              lv_obj_set_style_border_width(tile, 0, 0);
+              // ui-shared gray tokens (gray500/gray700) — the old 0x06222A ink
+              // rendered near-invisible on the panel.
+              lv_obj_set_style_text_color(cap, lv_color_hex(0x9E9E9E), 0);
+              lv_obj_set_style_text_color(ic,  lv_color_hex(0x616161), 0);
+              lv_obj_clear_flag(chip, LV_OBJ_FLAG_HIDDEN);
+            } else if (i > 0) {                            // member: tint gradient + ep_blue outline
+              grad(tile, 0x143B47, 0x0E2932);
+              lv_obj_set_style_border_width(tile, 2, 0);
+              lv_obj_set_style_border_color(tile, lv_color_hex(0x01B4DE), 0);
+              lv_obj_set_style_text_color(cap, lv_color_hex(0xF2F0EB), 0);
+              lv_obj_set_style_text_color(ic,  lv_color_hex(0x01B4DE), 0);
+              lv_obj_add_flag(chip, LV_OBJ_FLAG_HIDDEN);
+            } else {                                       // idle: slate gradient card
+              grad(tile, 0x3A3F4A, 0x23262D);
+              lv_obj_set_style_border_width(tile, 1, 0);
+              lv_obj_set_style_border_color(tile, lv_color_hex(0x454A55), 0);
+              lv_obj_set_style_text_color(cap, lv_color_hex(0xF2F0EB), 0);
+              lv_obj_set_style_text_color(ic,  lv_color_hex(0x9BA2BC), 0);
+              lv_obj_add_flag(chip, LV_OBJ_FLAG_HIDDEN);
+            }
+          };
+          mark(id(m_living),  id(m_living_cap),  id(m_living_ic),  id(m_living_chip),  "media_player.${media_room_0_slug}");
+          mark(id(m_kitchen), id(m_kitchen_cap), id(m_kitchen_ic), id(m_kitchen_chip), "media_player.${media_room_1_slug}");
+          mark(id(m_kitchen2),id(m_kitchen2_cap),id(m_kitchen2_ic),id(m_kitchen2_chip),"media_player.${media_room_2_slug}");
+          mark(id(m_office),  id(m_office_cap),  id(m_office_ic),  id(m_office_chip),  "media_player.${media_room_3_slug}");
+          mark(id(m_bedroom), id(m_bedroom_cap), id(m_bedroom_ic), id(m_bedroom_chip), "media_player.${media_room_4_slug}");
+          mark(id(m_garage),  id(m_garage_cap),  id(m_garage_ic),  id(m_garage_chip),  "media_player.${media_room_5_slug}");
+          mark(id(m_roam),    id(m_roam_cap),    id(m_roam_ic),    id(m_roam_chip),    "media_player.${media_room_6_slug}");
+          int n = (int)v.size();
+          if (n == 0) {
+            lv_label_set_text(id(lbl_rooms_status), "Tap rooms to group · 1st plays");
+          } else {
+            char buf[44];
+            snprintf(buf, sizeof(buf), "%d room%s grouped · 1st plays from", n, n == 1 ? "" : "s");
+            lv_label_set_text(id(lbl_rooms_status), buf);
+          }
+
+  # Pre-stage the Rooms modal from LIVE topology (otg follow-up): when the modal
+  # opens it should reflect the active room's CURRENT group — coordinator first,
+  # then every grouped member — so the modal is a point of EDITING existing groups
+  # rather than always starting empty. Reads the sonos_g[] group blobs
+  # ("coordSlug|state|vol|label|membersCsv|…"): find the blob holding the active
+  # target (as coord OR member), stage its coordinator at index 0 then its members.
+  # If the active room is standalone (no blob), stage just it. Run on modal open.
+  - id: prestage_from_topology
+    then:
+      - lambda: |-
+          auto known = [](const std::string& s) -> bool {
+            return s=="${media_room_0_slug}"||s=="${media_room_1_slug}"||s=="${media_room_2_slug}"||s=="${media_room_3_slug}"
+                 ||s=="${media_room_4_slug}"||s=="${media_room_5_slug}"||s=="${media_room_6_slug}";
+          };
+          // Active target → slug (strip the media_player. domain).
+          std::string tgt = id(media_active_target).empty() ? id(active_media_player)
+                                                            : id(media_active_target);
+          std::string tslug = tgt; { size_t d = tslug.rfind('.'); if (d != std::string::npos) tslug = tslug.substr(d + 1); }
+          // Find the group blob whose coordinator or members include the target.
+          // Whole-token match over the members list (comma OR space delimited) —
+          // a substring test would let "kitchen" match "kitchen_2".
+          auto in_members = [](const std::string& m, const std::string& sl) -> bool {
+            std::string t;
+            for (size_t j = 0; j <= m.size(); j++) {
+              char c = (j < m.size()) ? m[j] : ',';
+              if (c == ',' || c == ' ') { if (t == sl) return true; t.clear(); }
+              else t += c;
+            }
+            return false;
+          };
+          std::string coord, members; bool found = false;
+          for (int i = 0; i < 4 && !found; i++) {
+            std::string s = id(sonos_g)[i];
+            if (s.empty()) continue;
+            std::vector<std::string> f; size_t p = 0;
+            while (true) { size_t q = s.find('|', p);
+              f.push_back(q == std::string::npos ? s.substr(p) : s.substr(p, q - p));
+              if (q == std::string::npos) break; p = q + 1; }
+            if (f.size() < 8) continue;
+            if (f[0] == tslug || in_members(f[4], tslug)) { coord = f[0]; members = f[4]; found = true; }
+          }
+          auto &v = id(staged_players);
+          v.clear();
+          auto add = [&](const std::string& slug){
+            if (!known(slug)) return;
+            std::string ent = std::string("media_player.") + slug;
+            for (auto &e : v) if (e == ent) return;          // dedupe
+            v.push_back(ent);
+          };
+          if (found) {
+            add(coord);                                       // coordinator → index 0
+            // Members token list — split on comma OR space (the HA topology
+            // template's delimiter isn't visible here, so accept either).
+            std::string tok;
+            for (size_t i = 0; i <= members.size(); i++) {
+              char ch = (i < members.size()) ? members[i] : ',';
+              if (ch == ',' || ch == ' ') { if (!tok.empty()) { add(tok); tok.clear(); } }
+              else tok += ch;
+            }
+          } else {
+            add(tslug);                                       // standalone active room
+          }
+          if (!v.empty()) { id(active_media_player) = v.front(); id(media_active_target) = v.front(); }
+      - script.execute: refresh_device_sel
+
+  # Rooms modal: toggle a room in the staged vector. If it
+  # becomes/loses the front (coordinator), sync active_media_player + the HA mirror
+  # so transport/now-playing follow the coordinator. Then repaint the grid.
+  - id: stage_toggle
+    parameters:
+      player: string
+    then:
+      - lambda: |-
+          auto &v = id(staged_players);
+          bool found = false;
+          for (size_t i = 0; i < v.size(); i++) {
+            if (v[i] == player) { v.erase(v.begin() + i); found = true; break; }
+          }
+          if (!found) v.push_back(player);
+          id(last_manual_ms) = millis();   // .7: explicit pick → hold auto-follow
+          if (!v.empty()) {
+            id(active_media_player) = v.front();
+            // .5: target the new coordinator IMMEDIATELY so a play right after
+            // re-staging hits the right room; the `target` mirror (media_target_sync)
+            // remains authoritative and overrides once HA resolves the group.
+            id(media_active_target) = v.front();
+          }
+      # Mirror only when something is still staged — de-staging the last room
+      # must not re-persist the stale active_media_player to HA.
+      - if:
+          condition: {lambda: 'return !id(staged_players).empty();'}
+          then:
+            - homeassistant.action:
+                action: input_text.set_value
+                data_template:
+                  entity_id: ${active_player_helper}
+                  value: "{{ tgt }}"
+                variables:
+                  tgt: 'return id(active_media_player);'
+      - script.execute: refresh_device_sel
+
+  # Rooms modal: read a tile's live HA
+  # state from its topology string "<state>|<is_coordinator>|<group_size>". Drives
+  # the self-evident play/pause glyph (play=playing green / pause=paused amber /
+  # hidden=idle). Group-role is no longer badged (no-legend redesign) but the live
+  # coord/size are still cached so Group can decide whether to free the coordinator.
+  - id: apply_room_status
+    parameters:
+      room: int
+      info: string
+    then:
+      - lambda: |-
+          static lv_obj_t* dots[7] = { id(m_living_dot), id(m_kitchen_dot), id(m_kitchen2_dot), id(m_office_dot), id(m_bedroom_dot), id(m_garage_dot), id(m_roam_dot) };
+          if (room < 0 || room > 6) return;
+          std::string s = info;
+          size_t p1 = s.find('|');
+          size_t p2 = (p1 == std::string::npos) ? std::string::npos : s.find('|', p1 + 1);
+          std::string st = (p1 == std::string::npos) ? s : s.substr(0, p1);
+          int coord = 0, size = 1;
+          if (p1 != std::string::npos && p2 != std::string::npos) {
+            coord = atoi(s.substr(p1 + 1, p2 - p1 - 1).c_str());
+            size  = atoi(s.substr(p2 + 1).c_str());
+          }
+          // Cache live role/size so Group can decide whether to free the coordinator.
+          id(room_coord)[room] = coord;
+          id(room_size)[room]  = size;
+          lv_obj_t* dot = dots[room];
+          // Live playback glyph — self-evident, no legend.
+          if (st.find("playing") != std::string::npos) {
+            lv_label_set_text(dot, "$mdi_play");
+            lv_obj_set_style_text_color(dot, lv_color_hex(0x7ACF38), 0);
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_HIDDEN);
+          } else if (st.find("paused") != std::string::npos) {
+            lv_label_set_text(dot, "$mdi_pause");
+            lv_obj_set_style_text_color(dot, lv_color_hex(0xF4A900), 0);
+            lv_obj_clear_flag(dot, LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+          }
+
+  # ═══════  — auto-follow the actively-playing group ═══════
+  # The panel binds now-playing to one mirror (${media_mirror_entity} → whatever
+  # ${active_player_helper} names). Nothing repoints it when a DIFFERENT group starts
+  # playing, so it clings to the last-selected (now paused) room. This script, run on
+  # the 1s interval (page-main), ADOPTS the single actively-playing group when the
+  # current target is NOT playing — repointing the helper so the hero/art/chip follow.
+  #   • sonos_g[] holds ONLY playing groups (template excludes paused), so a non-empty
+  #     slot == a playing group; exactly one non-empty slot == unambiguous, adopt it.
+  #   • Never yanks a target that is itself playing (don't interrupt mid-listen), and
+  #     honours a 60s hold after an explicit pick (last_manual_ms) so a manual select
+  #     of a paused room — about to be played — isn't immediately overridden.
+  #   • Ambiguity (0 or >1 playing groups) → no-op; the SEE/SWITCH grid handles it.
+  - id: adopt_playing_group
+    then:
+      - lambda: |-
+          id(adopt_target) = "";                       // default: no-op
+          if (millis() - id(last_manual_ms) < 60000) return;   // respect a fresh manual pick
+          // Count playing groups (non-empty sonos_g slots); capture the sole coordinator.
+          int n = 0; std::string coord;
+          for (int i = 0; i < 4; i++) {
+            const std::string &s = id(sonos_g)[i];
+            if (s.empty()) continue;
+            n++;
+            if (n == 1) { size_t q = s.find('|'); coord = (q == std::string::npos) ? s : s.substr(0, q); }
+          }
+          if (n != 1 || coord.empty()) return;         // none / ambiguous → leave to SEE/SWITCH
+          std::string coordEnt = std::string("media_player.") + coord;
+          // Current target — already controlling the playing group? nothing to do.
+          std::string tgt = id(media_active_target).empty() ? id(active_media_player)
+                                                            : id(media_active_target);
+          if (tgt == coordEnt) return;
+          // Is the current target itself playing? If so, don't yank the user off it.
+          std::string tslug = tgt; { size_t d = tslug.rfind('.'); if (d != std::string::npos) tslug = tslug.substr(d + 1); }
+          static const char* R[7] = {"${media_room_0_slug}","${media_room_1_slug}","${media_room_2_slug}","${media_room_3_slug}","${media_room_4_slug}","${media_room_5_slug}","${media_room_6_slug}"};
+          for (int i = 0; i < 7; i++) {
+            if (tslug == R[i]) { if (id(room_state)[i] == "playing") return; break; }
+          }
+          id(adopt_target) = coordEnt;                 // commit below
+      - if:
+          condition:
+            lambda: 'return !id(adopt_target).empty();'
+          then:
+            - lambda: |-
+                id(active_media_player) = id(adopt_target);
+                id(media_active_target) = id(adopt_target);
+            - homeassistant.action:
+                action: input_text.set_value
+                data_template:
+                  entity_id: ${active_player_helper}
+                  value: "{{ tgt }}"
+                variables:
+                  tgt: 'return id(adopt_target);'
+            - logger.log:
+                format: "adopt_playing_group: following %s"
+                args: ['id(adopt_target).c_str()']
+
+  # ═══════  — media_play_uri: the ONE playback entry ═══════
+  # Plays `uri` on the resolved active room (media_active_target). All play paths
+  # call THIS — playlist tiles, Pick Music covers, Browse artists/tracks — so there
+  # is exactly one place that decides the target and one place that calls play_media.
+  # Sonos resolves spotify: URIs locally (the Connect API can't target Sonos), so
+  # spotify:playlist:/album:/artist:/track: all work with content_type=music. No-op
+  # on an empty uri/target (guards the "nothing selected / mirror not loaded" cases).
+  - id: media_play_uri
+    parameters:
+      uri: string
+    then:
+      - if:
+          condition:
+            lambda: 'return !uri.empty() && !id(media_active_target).empty();'
+          then:
+            - homeassistant.action:
+                action: media_player.play_media
+                variables:
+                  tgt: 'return id(media_active_target);'
+                  u: 'return uri;'
+                data_template:
+                  entity_id: "{{ tgt }}"
+                  media_content_id: "{{ u }}"
+                  media_content_type: music
+            - logger.log:
+                format: "media_play_uri: %s -> %s"
+                args: ['uri.c_str()', 'id(media_active_target).c_str()']
+
+  # now_playing_dock abstract-script contract:
+  # M1's Now Playing dock (uid: npd) calls npd_prev/npd_play/npd_next; implemented
+  # here against the SAME resolved active target so transport follows the room the
+  # user picked. media_play_pause toggles; prev/next skip on the coordinator.
+  - id: npd_prev
+    then:
+      - homeassistant.action: {action: media_player.media_previous_track, data_template: {entity_id: "{{ tgt }}"}, variables: {tgt: 'return id(media_active_target);'}}
+  - id: npd_play
+    then:
+      - homeassistant.action: {action: media_player.media_play_pause, data_template: {entity_id: "{{ tgt }}"}, variables: {tgt: 'return id(media_active_target);'}}
+  - id: npd_next
+    then:
+      - homeassistant.action: {action: media_player.media_next_track, data_template: {entity_id: "{{ tgt }}"}, variables: {tgt: 'return id(media_active_target);'}}
+
+  # Playlists modal: play grid tile `idx`.
+  # Re-adds the "spotify:playlist:" prefix to the bare ID and hands it to the single
+  # resolver media_play_uri (which targets the active coordinator). No-op when idx is
+  # out of range or the slot is empty (list not loaded / <8 favs).
+  - id: play_playlist
+    parameters:
+      idx: int
+    then:
+      - if:
+          condition:
+            lambda: 'return idx >= 0 && idx < (int) id(playlist_ids).size() && !id(playlist_ids)[idx].empty();'
+          then:
+            - script.execute:
+                id: media_play_uri
+                uri: !lambda 'return std::string("spotify:playlist:") + id(playlist_ids)[idx];'
+            # Dismiss the modal so the now-playing hero (main_page) shows the result.
+            - script.execute: popup_close
+
+  # ═══════ Pick Music takeover ═══════
+  # Open: the idle-landing / overlay "Pick" tile (M1, page-main) runs
+  #   [{script.execute: takeover_enter}, {lvgl.page.show: pick_music_page}]
+  # The page draws its OWN back chevron (takeover_exit) so it hides the floating one.
+  # Tile idx tap plays the favourite playlist `idx` on the active room and exits
+  # back to Now Playing so the hero shows the result.
+  - id: pick_play
+    parameters:
+      idx: int
+    then:
+      - if:
+          condition:
+            lambda: 'return idx >= 0 && idx < (int) id(playlist_ids).size() && !id(playlist_ids)[idx].empty();'
+          then:
+            - script.execute:
+                id: media_play_uri
+                uri: !lambda 'return std::string("spotify:playlist:") + id(playlist_ids)[idx];'
+            - script.execute: takeover_exit
+
+  # ═══════ Browse takeover — internal drill-down ═══════
+  # browse_show_view paints which of the ONE browse_page's stacked sub-views is
+  # visible (0 launcher / 1 Playlists / 2 Artists / 3 Recent-placeholder) and the
+  # internal page dots + header title. NOT nav2d — this is private to the takeover.
+  - id: browse_show_view
+    then:
+      - lambda: |-
+          int v = id(browse_view);
+          lv_obj_t* views[4] = { id(browse_v_home), id(browse_v_playlists), id(browse_v_artists), id(browse_v_recent) };
+          for (int i = 0; i < 4; i++) {
+            if (i == v) lv_obj_clear_flag(views[i], LV_OBJ_FLAG_HIDDEN);
+            else        lv_obj_add_flag(views[i], LV_OBJ_FLAG_HIDDEN);
+          }
+          const char* titles[4] = { "Browse", "Playlists", "Artists", "Recent" };
+          lv_label_set_text(id(lbl_browse_title), titles[v]);
+          // Internal page dots: only meaningful inside a paginated sub-view. The
+          // launcher (v0) hides them; sub-views show "on" for their own slot. (Real
+          // ←→ paging across >8 items is a TODO — see browse_page risks.)
+          if (v == 0) lv_obj_add_flag(id(browse_dots), LV_OBJ_FLAG_HIDDEN);
+          else        lv_obj_clear_flag(id(browse_dots), LV_OBJ_FLAG_HIDDEN);
+
+  # Enter a category from the launcher (sets the view + repaints).
+  - id: browse_open
+    parameters:
+      view: int
+    then:
+      - lambda: 'id(browse_view) = view;'
+      - script.execute: browse_show_view
+
+  # Back chevron behaviour: if inside a sub-view, return to the launcher (single
+  # internal level); if already on the launcher, leave the takeover entirely.
+  - id: browse_back
+    then:
+      - if:
+          condition:
+            lambda: 'return id(browse_view) != 0;'
+          then:
+            - lambda: 'id(browse_view) = 0;'
+            - script.execute: browse_show_view
+          else:
+            - script.execute: takeover_exit
+
+  # Play an artist context (Browse › Artists tile). Re-adds spotify:artist: to the
+  # bare id, routes through the single resolver, exits back to Now Playing.
+  - id: browse_play_artist
+    parameters:
+      idx: int
+    then:
+      - if:
+          condition:
+            lambda: 'return idx >= 0 && idx < (int) id(artist_ids).size() && !id(artist_ids)[idx].empty();'
+          then:
+            - script.execute:
+                id: media_play_uri
+                uri: !lambda 'return std::string("spotify:artist:") + id(artist_ids)[idx];'
+            - script.execute: takeover_exit
+      # browse_view is reset on the NEXT open (browse tiles always launch on v0).
+
+  # Playlists modal: register the two media modals with the
+  # library popup framework so the shared scrim / outside-tap / timeout close
+  # them. popup_close already hides popup_scrim; we add our two overlays.
+  - id: !extend popup_close
+    then:
+      - lvgl.widget.hide: rooms_modal
+      - lvgl.widget.hide: sources_modal
+
+globals:
+  # media_page: entity_id of the media_player the primary
+  # card currently targets. Set on device-tile tap (also mirrored to HA via
+  # ${active_player_helper}); read by the transport/volume actions.
+  # Kept in sync from the input_text mirror so external changes + reboot restore.
+  - id: active_media_player
+    type: std::string
+    restore_value: true
+    initial_value: '"media_player.${media_local_slug}"'
+  # : cover-art download serialiser. The 8 Pick covers
+  # (sensor.spotify_panel_playlists cover_0..7) and 8 Browse-Artist covers
+  # (sensor.spotify_panel_artists cover_0..7) each arrive as one batched HA
+  # push, so all 16 online_image fetches used to fire at once -> concurrent
+  # downloads + multi-second JPEG decodes starved the ESP-Hosted SDIO RX pool
+  # (sdio_drv.c assert) AND exhausted the heap (cxa_allocate_exception abort).
+  # Now: on_value only stashes url+want; the cov_pump interval starts ONE fetch
+  # at a time. cov_url[i]/cov_want[i] index 0..7 = pm_cover_img_*, 8..15 =
+  # ar_cover_img_*, 16..19 = rec_cover_img_* (Recently Played strip, page-main 1ch),
+  # 20..22 = al_who_{p1,p2,p3}_img (alarm person photos, page-alarm —
+  # routed here so person fetches can't race a cover burst, ). For slots
+  # 20..22 page-alarm stashes the FULL pre-proxied URL, so it passes through the
+  # pump's `: raw` branch unchanged.
+  # cov_inflight gates concurrency; cov_started_ms self-heals a missed
+  # on_download_finished after 12s. Not restored (transient).
+  # NB: imgs[] below references ids from page-main (rec_*) and page-alarm (al_who_*),
+  # so the pump assumes those pages are present (as today). A fully page-independent
+  # pump would need runtime registration — tracked as future modularization work.
+  - id: cov_url
+    type: 'std::array<std::string, 23>'
+    restore_value: false
+  - id: cov_want
+    type: 'std::array<bool, 23>'
+    restore_value: false
+  - id: cov_inflight
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: cov_started_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  # Rooms modal: ordered staged-selection of Sonos rooms
+  # for grouping. Front element is the coordinator (= active_media_player). Empty
+  # = nothing staged. Not restored (group state is live, re-read from HA on boot).
+  - id: staged_players
+    type: std::vector<std::string>
+    restore_value: false
+  # Live HA group role/size per room (index 0..6 = living/kitchen/kitchen_2/office/
+  # bedroom/garage/roam), kept current by apply_room_status from the .22 topology.
+  # Used by Group to decide whether the chosen coordinator must be freed first.
+  # Defaults (coord=0, size=1) mean "standalone" -> Group does a non-destructive add.
+  - id: room_coord
+    type: int[7]
+    restore_value: false
+    initial_value: '{0, 0, 0, 0, 0, 0, 0}'
+  - id: room_size
+    type: int[7]
+    restore_value: false
+    initial_value: '{1, 1, 1, 1, 1, 1, 1}'
+  # Live per-room volume % (0..100; -1 = unknown), cached from sensor.sonos_topology
+  # `rooms` by topo_rooms. Index order matches room_coord/room_size. Feeds the Rooms
+  # Overview grid per-card volume bars ( Step 4b).
+  - id: room_vol
+    type: int[7]
+    restore_value: false
+    initial_value: '{-1, -1, -1, -1, -1, -1, -1}'
+  # Live per-room state string (playing|paused|idle|unavailable), cached from the
+  # `rooms` attribute by topo_rooms. Index order matches room_coord. Feeds the Rooms
+  # Overview grid idle-room cards ( Step 4b).
+  - id: room_state
+    type: std::string[7]
+    restore_value: false
+  # Per-card switch targets for the Rooms Overview grid: gc_coord[slot] = the
+  # coordinator entity_id behind visible card `slot` (0..4), or "" for idle/empty.
+  # gc_tap reads this to switch which group the panel controls. Painted by mr_refresh.
+  - id: gc_coord
+    type: std::string[6]
+    restore_value: false
+  # Raw playing-group blobs g0..g3 from sensor.sonos_topology ( Step 4b/4c).
+  # Each = "coordSlug|state|vol|label|membersCsv|title|artist|artPath" (art LAST) or
+  # "" for an empty slot. Parsed on demand by the Rooms Overview grid + group picker.
+  - id: sonos_g
+    type: std::string[4]
+    restore_value: false
+  - id: sonos_g_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+  # ═══════ .6 / .7 — multi-room reconcile + auto-follow scratch ═══════
+  # last_manual_ms: millis() of the last EXPLICIT room selection (gc_tap card switch
+  # or Rooms-modal stage_toggle). adopt_playing_group honours a short hold after a
+  # manual pick so auto-follow never yanks the user off a room they just chose.
+  - id: last_manual_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  # adopt_target: coordinator entity adopt_playing_group decides to follow this tick,
+  # or "" for no-op (the lambda computes it; the trailing if-action commits it).
+  - id: adopt_target
+    type: std::string
+    restore_value: false
+  # reconcile_unjoin: CSV of media_player.* entities the Rooms-modal Group action must
+  # unjoin (live group members the user de-staged). Computed in the Group on_click
+  # lambda, consumed by the unjoin action right after. Transient.
+  - id: reconcile_unjoin
+    type: std::string
+    restore_value: false
+  # Playlists modal: BARE base62 playlist IDs for the 8
+  # grid tiles, parsed from the ids_8 attribute of sensor.spotify_panel_playlists.
+  # Index 0..7 maps to tiles pl_tile_0..7. play_playlist re-adds the
+  # "spotify:playlist:" prefix. Not restored (re-published by the HA glue on boot).
+  - id: playlist_ids
+    type: std::vector<std::string>
+    restore_value: false
+
+  # ═══════  — single active-room resolver (THE FIX) ═══════
+  # media_active_target is the ONE entity_id that ALL playback targets. It is the
+  # resolved group COORDINATOR (Sonos plays on the coordinator; targeting a grouped
+  # member silently no-ops — the old bug). Kept current by media_target_sync below,
+  # which mirrors ${media_mirror_entity}'s `target` attribute (HA resolves
+  # the staged selection → coordinator there). Falls back to active_media_player
+  # (the staged front) when the mirror hasn't published yet, so a fresh boot still
+  # has a sane target. EVERY play path (playlist tiles, Pick Music covers, Browse
+  # tracks/artists) routes through media_play_uri(uri) → this target. restore_value
+  # so the last good coordinator survives a reboot before the mirror refreshes.
+  - id: media_active_target
+    type: std::string
+    restore_value: true
+    initial_value: '"media_player.${media_local_slug}"'
+  # Bare base62 artist IDs for the Browse › Artists grid (ids_8 of
+  # sensor.spotify_panel_artists). browse_play_artist re-adds "spotify:artist:".
+  - id: artist_ids
+    type: std::vector<std::string>
+    restore_value: false
+  # Browse takeover internal pager: which sub-view of the
+  # ONE browse_page is showing. 0 = category launcher; 1 = Playlists grid; 2 =
+  # Artists grid; 3 = Recent/Liked placeholder. Drives browse_show_view + the
+  # internal page dots. Not a nav2d page — back chevron always returns to 0 first,
+  # then takeover_exit. Not restored (browse always re-opens on the launcher).
+  - id: browse_view
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+# : cover-art download serialiser pump. Starts at most ONE
+# online_image fetch+decode at a time so concurrent downloads can't starve the
+# ESP-Hosted SDIO RX pool or exhaust the heap. Gated by cov_inflight (set here,
+# cleared in each cover's on_download_finished) with a 12s self-heal for a
+# missed callback, plus is_decoding() as a secondary guard. Covers paint
+# progressively (~one per tick). See the globals block above for the model.
+#
+# DESIGN: polling, NOT trigger-driven — justified. This is the proven
+# crash-prevention path for the documented P4/ESP-Hosted SDIO-burst + heap-exhaust
+# crash class (see hardware/p4-86-panel.yaml). A 750ms poll that early-exits is the
+# LEAST-RISK shape here: the only always-on cost is, per tick (≈1.3 Hz), a single
+# cov_inflight check + at most two O(23) scans of trivial pointer/bool ops — far
+# below the LVGL render budget and dwarfed by a single JPEG decode. A trigger-driven
+# queue would have to re-fire from every enqueue site AND from each
+# on_download_finished to keep draining, reintroducing the missed-callback stall the
+# 12s self-heal exists to recover from — i.e. more moving parts guarding a crash
+# class we already prevent, for an idle saving that is not measurable against LVGL.
+#
+# ENQUEUE CONTRACT (how a future image-using page joins the pump, /):
+#   1. Declare your online_image with `update_interval: never` + an on_download_finished
+#      / on_error that BOTH end with `lambda: id(cov_inflight) = false;` (so the pump
+#      advances after your fetch).
+#   2. Add your image id to the imgs[] array below and bump its size + both loop
+#      bounds + the cov_url/cov_want array sizes (globals above).
+#   3. To fetch: stash the URL and raise the want flag — NEVER call set_url/update
+#      directly (that bypasses the serialiser):
+#        id(cov_url)[<slot>] = "<url>"; id(cov_want)[<slot>] = true;
+#      Spotify CDN URLs are auto-routed through the imageproxy below; pre-proxied or
+#      other-host URLs are used as-is.
+interval:
+  - interval: 750ms
+    then:
+      - lambda: |-
+          static esphome::online_image::OnlineImage *const imgs[23] = {
+            id(pm_cover_img_0), id(pm_cover_img_1), id(pm_cover_img_2), id(pm_cover_img_3),
+            id(pm_cover_img_4), id(pm_cover_img_5), id(pm_cover_img_6), id(pm_cover_img_7),
+            id(ar_cover_img_0), id(ar_cover_img_1), id(ar_cover_img_2), id(ar_cover_img_3),
+            id(ar_cover_img_4), id(ar_cover_img_5), id(ar_cover_img_6), id(ar_cover_img_7),
+            id(rec_cover_img_0), id(rec_cover_img_1), id(rec_cover_img_2), id(rec_cover_img_3),
+            id(al_who_p1_img), id(al_who_p2_img), id(al_who_p3_img),   // 20..22 person photos
+          };
+          // Self-heal: clear a stuck inflight if its on_download_finished never fired.
+          if (id(cov_inflight) && (millis() - id(cov_started_ms)) > 12000) {
+            id(cov_inflight) = false;
+          }
+          if (id(cov_inflight)) return;
+          // Secondary guard: never start a fetch while any cover is still decoding.
+          for (int i = 0; i < 23; i++) {
+            if (imgs[i]->is_decoding()) return;
+          }
+          for (int i = 0; i < 23; i++) {
+            if (id(cov_want)[i]) {
+              id(cov_want)[i] = false;
+              id(cov_inflight) = true;
+              id(cov_started_ms) = millis();
+              // Route Spotify covers through the imageproxy (plain HTTP,
+              // pre-resized) to drop panel-side TLS + shrink the download. .
+              std::string raw = id(cov_url)[i];
+              const char *sz = (i < 8) ? "150x150" : (i < 16) ? "120x120" : "104x104";
+              bool spot = raw.find("scdn.co") != std::string::npos || raw.find("spotifycdn.com") != std::string::npos;
+              std::string u = spot ? (std::string("${imageproxy_url}/") + sz + "/" + raw) : raw;
+              imgs[i]->set_url(u.c_str());
+              imgs[i]->update();
+              return;
+            }
+          }
+sensor:
+  # ───── Media primary volume (backend mirror — follows selected player) ─────
+  # Backend data object only (contract §5): page-main owns the now-playing volume
+  # UI (np_vol) and drives it from the active player, so this exposes the value as
+  # a sensor without painting any page-media widget (the old hero slider is gone).
+  - platform: homeassistant
+    id: media_volume
+    entity_id: ${media_mirror_entity}
+    attribute: volume
+
+text_sensor:
+  # Now-playing backend mirrors (contract §5): page-main's np_refresh READS these
+  # via .state (state-owned-by-page convention) to paint its hero. They are pure
+  # data objects here — page-media no longer owns any now-playing widget, so they
+  # carry no on_value (the old hero labels/art moved to page-main as np_*).
+  #   media_state → play/pause + idle/playing switch
+  #   media_title → track title;  media_device_name → source room caption
+  #   media_artist → artist line
+  - platform: homeassistant
+    id: media_state
+    entity_id: ${media_mirror_entity}
+  - platform: homeassistant
+    id: media_title
+    entity_id: ${media_mirror_entity}
+    attribute: title
+  - platform: homeassistant
+    id: media_device_name
+    entity_id: ${media_mirror_entity}
+    attribute: device_name
+  - platform: homeassistant
+    id: media_artist
+    entity_id: ${media_mirror_entity}
+    attribute: artist
+  # Active-player selection mirror: keeps the ESPHome global in sync with HA
+  # (covers external changes + reboot restore) and refreshes the tile highlight.
+  - platform: homeassistant
+    id: active_player_sync
+    entity_id: ${active_player_helper}
+    on_value:
+      - lambda: 'if (!x.empty() && x != "unknown") id(active_media_player) = x;'
+      - script.execute: refresh_device_sel
+      # Keep the resolver target sane even before the topology mirror publishes:
+      # if media_active_target is still the boot default and a real selection
+      # arrives, adopt it (the `target` mirror below overrides once it loads).
+      - lambda: |-
+          // (.empty() could never be true — the global boots to the local-room
+          // default via restore_value/initial_value, so compare against that.)
+          if (!x.empty() && x != "unknown"
+              && id(media_active_target) == "media_player.${media_local_slug}")
+            id(media_active_target) = x;
+  # ═══════  — active-target resolver mirror ═══════
+  # ${media_mirror_entity} exposes a `target` attribute = the entity_id HA
+  # resolved for playback (the group COORDINATOR for the staged room/group). This
+  # is the authoritative source for media_active_target; media_play_uri + the npd_*
+  # transport scripts read it. Empty/unknown is ignored so a transient blank never
+  # wipes a good target.
+  - platform: homeassistant
+    id: media_target_sync
+    entity_id: ${media_mirror_entity}
+    attribute: target
+    on_value:
+      - lambda: |-
+          if (!x.empty() && x != "unknown" && x != "unavailable")
+            id(media_active_target) = x;
+  # Live per-room status (Rooms modal + multiroom rows). ONE text_sensor reads the
+  # combined `rooms` attribute off sensor.sonos_topology — "slug|state|isCoord|size|vol;…"
+  # for every discovered Sonos (sorted by slug, fully dynamic) — and fans it out to
+  # apply_room_status by mapping each slug to its fixed panel room index. New speakers
+  # appear automatically; unmapped slugs are ignored. (Replaces the old 7 per-room
+  # attributes from the sonos topology sensor —  dynamic re-model.)
+  # Per-room volume (vol%) is cached into room_vol[] for the Rooms Overview grid (4b).
+  - platform: homeassistant
+    id: topo_rooms
+    entity_id: sensor.sonos_topology
+    attribute: rooms
+    on_value:
+      - lambda: |-
+          auto idx_of = [](const std::string& slug) -> int {
+            if (slug == "${media_room_0_slug}") return 0;
+            if (slug == "${media_room_1_slug}") return 1;
+            if (slug == "${media_room_2_slug}") return 2;
+            if (slug == "${media_room_3_slug}") return 3;
+            if (slug == "${media_room_4_slug}") return 4;
+            if (slug == "${media_room_5_slug}") return 5;
+            if (slug == "${media_room_6_slug}") return 6;
+            return -1;
+          };
+          std::string s = x;
+          size_t start = 0;
+          while (start < s.size()) {
+            size_t semi = s.find(';', start);
+            std::string row = (semi == std::string::npos) ? s.substr(start) : s.substr(start, semi - start);
+            start = (semi == std::string::npos) ? s.size() : semi + 1;
+            if (row.empty()) continue;
+            // row = slug|state|isCoord|size|vol
+            size_t a = row.find('|');
+            if (a == std::string::npos) continue;
+            std::string slug = row.substr(0, a);
+            int idx = idx_of(slug);
+            if (idx < 0) continue;
+            std::string rest = row.substr(a + 1);           // state|isCoord|size|vol
+            size_t v = rest.rfind('|');                     // trim trailing |vol
+            std::string info = (v == std::string::npos) ? rest : rest.substr(0, v);
+            int vol = (v == std::string::npos) ? -1 : atoi(rest.substr(v + 1).c_str());
+            size_t sp = info.find('|');
+            std::string st = (sp == std::string::npos) ? info : info.substr(0, sp);
+            if (idx >= 0 && idx < 7) { id(room_vol)[idx] = vol; id(room_state)[idx] = st; }
+            id(apply_room_status)->execute(idx, info);      // info = state|coord|size
+          }
+  # Playing-group blobs g0..g3 + g_count from sensor.sonos_topology ( 4b/4c).
+  # Cached raw into sonos_g[]/sonos_g_count; the Rooms Overview grid + group picker
+  # parse them on refresh. (grid_refresh wired in Step 4b-ii.)
+  - platform: homeassistant
+    id: topo_g0
+    entity_id: sensor.sonos_topology
+    attribute: g0
+    on_value:
+      - lambda: 'id(sonos_g)[0] = x;'
+  - platform: homeassistant
+    id: topo_g1
+    entity_id: sensor.sonos_topology
+    attribute: g1
+    on_value:
+      - lambda: 'id(sonos_g)[1] = x;'
+  - platform: homeassistant
+    id: topo_g2
+    entity_id: sensor.sonos_topology
+    attribute: g2
+    on_value:
+      - lambda: 'id(sonos_g)[2] = x;'
+  - platform: homeassistant
+    id: topo_g3
+    entity_id: sensor.sonos_topology
+    attribute: g3
+    on_value:
+      - lambda: 'id(sonos_g)[3] = x;'
+  - platform: homeassistant
+    id: topo_gcount
+    entity_id: sensor.sonos_topology
+    attribute: g_count
+    on_value:
+      - lambda: 'id(sonos_g_count) = atoi(x.c_str());'
+  # Playlists modal: the SpotifyPlus glue (spotify_panel.yaml,
+  # ) republishes the first 8 favourite playlists as two newline-joined
+  # attributes on sensor.spotify_panel_playlists. names_8 → grid tile captions
+  # (empty/absent slots hide their tile); ids_8 → the bare-ID lookup table the
+  # play_playlist script indexes. Both stay under the ESPHome 255-char cap.
+  - platform: homeassistant
+    id: spotify_playlist_names
+    entity_id: ${spotify_playlists_entity}
+    attribute: names_8
+    on_value:
+      - lambda: |-
+          static lv_obj_t* tiles[8] = { id(pl_tile_0), id(pl_tile_1), id(pl_tile_2), id(pl_tile_3),
+                                        id(pl_tile_4), id(pl_tile_5), id(pl_tile_6), id(pl_tile_7) };
+          static lv_obj_t* names[8] = { id(pl_tile_0_name), id(pl_tile_1_name), id(pl_tile_2_name), id(pl_tile_3_name),
+                                        id(pl_tile_4_name), id(pl_tile_5_name), id(pl_tile_6_name), id(pl_tile_7_name) };
+          // Drop codepoints above U+00FF (emoji in playlist names) — the Oswald
+          // GF_Latin_Core builds have no glyphs for them, so they render as tofu.
+          // Keeps ASCII + the 2-byte C2/C3 sequences (U+0080..U+00FF), skips the rest.
+          auto strip_hi = [](const std::string& in) -> std::string {
+            std::string out; out.reserve(in.size());
+            for (size_t j = 0; j < in.size();) {
+              unsigned char c = in[j];
+              size_t len = (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0) ? 2 : ((c & 0xF0) == 0xE0) ? 3 : 4;
+              if (len == 1 || (len == 2 && (c == 0xC2 || c == 0xC3))) out.append(in, j, len);
+              j += len;
+            }
+            while (!out.empty() && out.front() == ' ') out.erase(out.begin());
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            return out;
+          };
+          std::string s = x;
+          for (int i = 0; i < 8; i++) {
+            size_t nl = s.find('\n');
+            std::string name = (i < 7) ? s.substr(0, nl) : s;   // last tile takes the remainder
+            if (nl == std::string::npos) name = s;
+            name = strip_hi(name);
+            if (!name.empty()) {
+              lv_label_set_text(names[i], name.c_str());
+              lv_obj_clear_flag(tiles[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_label_set_text(names[i], "");
+              lv_obj_add_flag(tiles[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            if (nl == std::string::npos) { s.clear(); }
+            else { s = s.substr(nl + 1); }
+          }
+  - platform: homeassistant
+    id: spotify_playlist_ids
+    entity_id: ${spotify_playlists_entity}
+    attribute: ids_8
+    on_value:
+      - lambda: |-
+          auto &v = id(playlist_ids);
+          v.clear();
+          std::string s = x;
+          while (true) {
+            size_t nl = s.find('\n');
+            std::string id_str = (nl == std::string::npos) ? s : s.substr(0, nl);
+            v.push_back(id_str);
+            if (nl == std::string::npos) break;
+            s = s.substr(nl + 1);
+          }
+
+  # ═══════ Pick Music takeover ═══════
+  # Caption labels for the cover grid — reuses names_8 (same source as the modal),
+  # painted onto the cover tiles' overlaid title labels (lbl_pm_cov_0..7). Empty
+  # slots hide their tile so a <8 favourite list leaves no blanks.
+  - platform: homeassistant
+    id: spotify_pick_names
+    entity_id: ${spotify_playlists_entity}
+    attribute: names_8
+    on_value:
+      - lambda: |-
+          // Paints BOTH the Pick Music grid (pm_cov_N) AND the Browse Playlists
+          // sub-view (bpl_N) — they share the same favourites source.
+          static lv_obj_t* tiles[8]  = { id(pm_cov_0), id(pm_cov_1), id(pm_cov_2), id(pm_cov_3),
+                                         id(pm_cov_4), id(pm_cov_5), id(pm_cov_6), id(pm_cov_7) };
+          static lv_obj_t* names[8]  = { id(lbl_pm_cov_0), id(lbl_pm_cov_1), id(lbl_pm_cov_2), id(lbl_pm_cov_3),
+                                         id(lbl_pm_cov_4), id(lbl_pm_cov_5), id(lbl_pm_cov_6), id(lbl_pm_cov_7) };
+          static lv_obj_t* btiles[8] = { id(bpl_0), id(bpl_1), id(bpl_2), id(bpl_3),
+                                         id(bpl_4), id(bpl_5), id(bpl_6), id(bpl_7) };
+          static lv_obj_t* bnames[8] = { id(lbl_bpl_0), id(lbl_bpl_1), id(lbl_bpl_2), id(lbl_bpl_3),
+                                         id(lbl_bpl_4), id(lbl_bpl_5), id(lbl_bpl_6), id(lbl_bpl_7) };
+          // Drop codepoints above U+00FF (emoji → tofu) — same skip loop as the
+          // Playlists-modal names_8 lambda above.
+          auto strip_hi = [](const std::string& in) -> std::string {
+            std::string out; out.reserve(in.size());
+            for (size_t j = 0; j < in.size();) {
+              unsigned char c = in[j];
+              size_t len = (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0) ? 2 : ((c & 0xF0) == 0xE0) ? 3 : 4;
+              if (len == 1 || (len == 2 && (c == 0xC2 || c == 0xC3))) out.append(in, j, len);
+              j += len;
+            }
+            while (!out.empty() && out.front() == ' ') out.erase(out.begin());
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            return out;
+          };
+          std::string s = x;
+          for (int i = 0; i < 8; i++) {
+            size_t nl = s.find('\n');
+            std::string name = strip_hi((nl == std::string::npos) ? s : s.substr(0, nl));
+            if (!name.empty()) {
+              lv_label_set_text(names[i], name.c_str());
+              lv_label_set_text(bnames[i], name.c_str());
+              lv_obj_clear_flag(tiles[i],  LV_OBJ_FLAG_HIDDEN);
+              lv_obj_clear_flag(btiles[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_label_set_text(names[i], "");
+              lv_label_set_text(bnames[i], "");
+              lv_obj_add_flag(tiles[i],  LV_OBJ_FLAG_HIDDEN);
+              lv_obj_add_flag(btiles[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            if (nl == std::string::npos) { s.clear(); } else { s = s.substr(nl + 1); }
+          }
+  # Cover art — ONE attribute per tile (cover_0..7 = Spotify CDN urls, see the HA
+  # glue). Each sets its tile's online_image url; empty url leaves the gray800 tile
+  # bg (the cover_tile's image just stays blank — acceptable placeholder).
+  - platform: homeassistant
+    id: spotify_pick_cover_0
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_0
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[0] = x; id(cov_want)[0] = true;'}]}
+  - platform: homeassistant
+    id: spotify_pick_cover_1
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_1
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[1] = x; id(cov_want)[1] = true;'}]}
+  - platform: homeassistant
+    id: spotify_pick_cover_2
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_2
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[2] = x; id(cov_want)[2] = true;'}]}
+  - platform: homeassistant
+    id: spotify_pick_cover_3
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_3
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[3] = x; id(cov_want)[3] = true;'}]}
+  - platform: homeassistant
+    id: spotify_pick_cover_4
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_4
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[4] = x; id(cov_want)[4] = true;'}]}
+  - platform: homeassistant
+    id: spotify_pick_cover_5
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_5
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[5] = x; id(cov_want)[5] = true;'}]}
+  - platform: homeassistant
+    id: spotify_pick_cover_6
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_6
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[6] = x; id(cov_want)[6] = true;'}]}
+  - platform: homeassistant
+    id: spotify_pick_cover_7
+    entity_id: ${spotify_playlists_entity}
+    attribute: cover_7
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[7] = x; id(cov_want)[7] = true;'}]}
+
+  # ═══════ Browse › Artists ═══════
+  # names_8 → tile captions (lbl_ar_cov_N); ids_8 → bare artist ids (artist_ids,
+  # browse_play_artist re-adds spotify:artist:); cover_N → circular online_image.
+  - platform: homeassistant
+    id: spotify_artist_names
+    entity_id: ${spotify_artists_entity}
+    attribute: names_8
+    on_value:
+      - lambda: |-
+          static lv_obj_t* tiles[8] = { id(ar_cov_0), id(ar_cov_1), id(ar_cov_2), id(ar_cov_3),
+                                        id(ar_cov_4), id(ar_cov_5), id(ar_cov_6), id(ar_cov_7) };
+          static lv_obj_t* names[8] = { id(lbl_ar_cov_0), id(lbl_ar_cov_1), id(lbl_ar_cov_2), id(lbl_ar_cov_3),
+                                        id(lbl_ar_cov_4), id(lbl_ar_cov_5), id(lbl_ar_cov_6), id(lbl_ar_cov_7) };
+          std::string s = x;
+          for (int i = 0; i < 8; i++) {
+            size_t nl = s.find('\n');
+            std::string name = (nl == std::string::npos) ? s : s.substr(0, nl);
+            if (!name.empty()) {
+              lv_label_set_text(names[i], name.c_str());
+              lv_obj_clear_flag(tiles[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_label_set_text(names[i], "");
+              lv_obj_add_flag(tiles[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            if (nl == std::string::npos) { s.clear(); } else { s = s.substr(nl + 1); }
+          }
+  - platform: homeassistant
+    id: spotify_artist_ids
+    entity_id: ${spotify_artists_entity}
+    attribute: ids_8
+    on_value:
+      - lambda: |-
+          auto &v = id(artist_ids);
+          v.clear();
+          std::string s = x;
+          while (true) {
+            size_t nl = s.find('\n');
+            v.push_back((nl == std::string::npos) ? s : s.substr(0, nl));
+            if (nl == std::string::npos) break;
+            s = s.substr(nl + 1);
+          }
+  - platform: homeassistant
+    id: spotify_artist_cover_0
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_0
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[8] = x; id(cov_want)[8] = true;'}]}
+  - platform: homeassistant
+    id: spotify_artist_cover_1
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_1
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[9] = x; id(cov_want)[9] = true;'}]}
+  - platform: homeassistant
+    id: spotify_artist_cover_2
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_2
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[10] = x; id(cov_want)[10] = true;'}]}
+  - platform: homeassistant
+    id: spotify_artist_cover_3
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_3
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[11] = x; id(cov_want)[11] = true;'}]}
+  - platform: homeassistant
+    id: spotify_artist_cover_4
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_4
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[12] = x; id(cov_want)[12] = true;'}]}
+  - platform: homeassistant
+    id: spotify_artist_cover_5
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_5
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[13] = x; id(cov_want)[13] = true;'}]}
+  - platform: homeassistant
+    id: spotify_artist_cover_6
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_6
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[14] = x; id(cov_want)[14] = true;'}]}
+  - platform: homeassistant
+    id: spotify_artist_cover_7
+    entity_id: ${spotify_artists_entity}
+    attribute: cover_7
+    on_value:
+      - if: {condition: {lambda: 'return !x.empty();'}, then: [{lambda: 'id(cov_url)[15] = x; id(cov_want)[15] = true;'}]}
+
+online_image:
+  # NOTE: the now-playing hero album art moved to page-main (np_bg_art / np_art_img,
+  # 480-px) when the now-playing UI left page-media. page-media no longer fetches
+  # hero art — only the Pick-Music / Browse covers below.
+
+  # ═══════ Pick Music cover online_images ═══════
+  # One per grid tile (8). URL pushed at runtime from the cover_N attributes; resize
+  # to the tile size so the JPEG decoder never chews an oversized CDN source. The
+  # cover_tile binds the tile image to img_pm_cov_N (its img_${uid}); on_download_
+  # finished repaints it once the fetch completes. Spotify covers are JPEG.
+  - id: pm_cover_img_0
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_0, src: pm_cover_img_0}}, {lvgl.image.update: {id: img_bpl_0, src: pm_cover_img_0}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: pm_cover_img_1
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_1, src: pm_cover_img_1}}, {lvgl.image.update: {id: img_bpl_1, src: pm_cover_img_1}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: pm_cover_img_2
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_2, src: pm_cover_img_2}}, {lvgl.image.update: {id: img_bpl_2, src: pm_cover_img_2}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: pm_cover_img_3
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_3, src: pm_cover_img_3}}, {lvgl.image.update: {id: img_bpl_3, src: pm_cover_img_3}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: pm_cover_img_4
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_4, src: pm_cover_img_4}}, {lvgl.image.update: {id: img_bpl_4, src: pm_cover_img_4}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: pm_cover_img_5
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_5, src: pm_cover_img_5}}, {lvgl.image.update: {id: img_bpl_5, src: pm_cover_img_5}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: pm_cover_img_6
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_6, src: pm_cover_img_6}}, {lvgl.image.update: {id: img_bpl_6, src: pm_cover_img_6}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: pm_cover_img_7
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 150x150
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_pm_cov_7, src: pm_cover_img_7}}, {lvgl.image.update: {id: img_bpl_7, src: pm_cover_img_7}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+
+  # ═══════ Browse › Artists cover online_images ═══════
+  - id: ar_cover_img_0
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_0, src: ar_cover_img_0}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: ar_cover_img_1
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_1, src: ar_cover_img_1}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: ar_cover_img_2
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_2, src: ar_cover_img_2}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: ar_cover_img_3
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_3, src: ar_cover_img_3}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: ar_cover_img_4
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_4, src: ar_cover_img_4}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: ar_cover_img_5
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_5, src: ar_cover_img_5}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: ar_cover_img_6
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_6, src: ar_cover_img_6}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+  - id: ar_cover_img_7
+    url: "https://i.scdn.co/"
+    format: JPEG
+    type: RGB565
+    resize: 120x120
+    update_interval: never
+    on_download_finished: [{lvgl.image.update: {id: img_ar_cov_7, src: ar_cover_img_7}}, {lambda: 'id(cov_inflight) = false;'}]
+    on_error: [{lambda: 'id(cov_inflight) = false;'}]
+
+lvgl:
+  pages:
+    # ═══════════════ PICK MUSIC takeover ═══════════════
+    # skip: true → never landed on by a function/page swipe. Reached from M1
+    # (page-main idle "Pick" tile + the playing-overlay "Pick" quick-button) via
+    #   [{script.execute: takeover_enter}, {lvgl.page.show: pick_music_page}]
+    # takeover_enter hides the singleton top bar (nav_chrome 0) + shows the floating
+    # back chevron; we draw our OWN header chevron and hide the floating one on_load.
+    # NO nav2d-swipe include → function swipes can't fire here. 4×2 cover grid fits
+    # 8 recent playlists with no scroll; tap → media_play_uri on the active room.
+    - id: pick_music_page
+      skip: true
+      bg_color: 0x0D0D0D
+      bg_opa: cover
+      on_load:
+        - lvgl.widget.hide: takeover_back     # we host our own header chevron
+      widgets:
+        # ── Own header (back · title) — top bar is suppressed for takeovers ──
+        - button:
+            id: pm_back
+            align: TOP_LEFT
+            x: 16
+            y: 8
+            width: 56
+            height: 56
+            radius: 28
+            bg_color: very_dark_gray
+            border_width: 0
+            pad_all: 0
+            widgets:
+              - label: {clickable: false, align: CENTER, text: $mdi_chevron_left, text_font: mdi_media_28, text_color: white}
+            on_click:
+              - script.execute: takeover_exit
+        - label: {clickable: false, align: TOP_MID, y: 18, text: "Recent Playlists", styles: header_title}
+        - obj: {clickable: false, styles: shell_divider, align: TOP_MID, y: 72, width: 100%, height: 1}
+        # ── Cover grid (4×2) below the header ──
+        - obj:
+            align: TOP_MID
+            y: 92
+            width: 672
+            height: 540
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1), FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1)]
+              pad_column: 14
+              pad_row: 14
+            widgets:
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_0, src: pm_cover_img_0, caption: "", col: 0, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 0}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_1, src: pm_cover_img_1, caption: "", col: 1, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 1}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_2, src: pm_cover_img_2, caption: "", col: 2, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 2}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_3, src: pm_cover_img_3, caption: "", col: 3, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 3}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_4, src: pm_cover_img_4, caption: "", col: 0, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 4}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_5, src: pm_cover_img_5, caption: "", col: 1, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 5}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_6, src: pm_cover_img_6, caption: "", col: 2, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 6}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: pm_cov_7, src: pm_cover_img_7, caption: "", col: 3, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 7}}]
+
+    # ═══════════════ BROWSE takeover ═══════════════
+    # ONE skip:true page hosting an INTERNAL drill-down: a category launcher
+    # (Playlists/Artists/Albums/Recent/Liked/Genres) whose tiles swap which stacked
+    # sub-view is visible (browse_open(view) → browse_show_view). Back chevron runs
+    # browse_back: from a sub-view it returns to the launcher; from the launcher it
+    # leaves the takeover. No nav_go — paging is private (browse_dots). Reached from
+    # M1 via [{script.execute: takeover_enter}, {lvgl.page.show: browse_page}].
+    - id: browse_page
+      skip: true
+      bg_color: 0x0D0D0D
+      bg_opa: cover
+      on_load:
+        - lvgl.widget.hide: takeover_back
+        - lambda: 'id(browse_view) = 0;'    # always open on the launcher
+        - script.execute: browse_show_view
+      widgets:
+        - button:
+            id: browse_back_btn
+            align: TOP_LEFT
+            x: 16
+            y: 8
+            width: 56
+            height: 56
+            radius: 28
+            bg_color: very_dark_gray
+            border_width: 0
+            pad_all: 0
+            widgets:
+              - label: {clickable: false, align: CENTER, text: $mdi_chevron_left, text_font: mdi_media_28, text_color: white}
+            on_click:
+              - script.execute: browse_back
+        - label: {id: lbl_browse_title, clickable: false, align: TOP_MID, y: 18, text: "Browse", styles: header_title}
+        - obj: {clickable: false, styles: shell_divider, align: TOP_MID, y: 72, width: 100%, height: 1}
+        # Internal page dots (shown only inside a paginated sub-view). Single dot for
+        # now — real ←→ paging across >8 items is a TODO (see risks).
+        - obj:
+            id: browse_dots
+            hidden: true
+            clickable: false
+            align: BOTTOM_MID
+            y: -16
+            width: SIZE_CONTENT
+            height: SIZE_CONTENT
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 9}
+            widgets:
+              - obj: {clickable: false, width: 9, height: 9, radius: 5, bg_color: gray400, border_width: 0, pad_all: 0}
+
+        # ─── View 0: category launcher (3×2) ───
+        - obj:
+            id: browse_v_home
+            align: TOP_MID
+            y: 92
+            width: 672
+            height: 540
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1)]
+              pad_column: 16
+              pad_row: 16
+            widgets:
+              - button:
+                  <<: !include {file: widgets/category_tile.yaml, vars: {uid: cat_playlists, glyph: $mdi_playlist_music, caption: "Playlists", col: 0, row: 0, bg: 0x14161B, fg: white, glyph_font: mdi_media_28, caption_font: oswald_20}}
+                  on_click: [{script.execute: {id: browse_open, view: 1}}]
+              - button:
+                  <<: !include {file: widgets/category_tile.yaml, vars: {uid: cat_artists, glyph: $mdi_account_music, caption: "Artists", col: 1, row: 0, bg: 0x14161B, fg: white, glyph_font: mdi_media_28, caption_font: oswald_20}}
+                  on_click: [{script.execute: {id: browse_open, view: 2}}]
+              - button:
+                  <<: !include {file: widgets/category_tile.yaml, vars: {uid: cat_albums, glyph: $mdi_album, caption: "Albums", col: 2, row: 0, bg: 0x14161B, fg: white, glyph_font: mdi_media_28, caption_font: oswald_20}}
+                  on_click: [{script.execute: {id: browse_open, view: 3}}]
+              - button:
+                  <<: !include {file: widgets/category_tile.yaml, vars: {uid: cat_recent, glyph: $mdi_history, caption: "Recent", col: 0, row: 1, bg: 0x14161B, fg: white, glyph_font: mdi_media_28, caption_font: oswald_20}}
+                  on_click: [{script.execute: {id: browse_open, view: 3}}]
+              - button:
+                  <<: !include {file: widgets/category_tile.yaml, vars: {uid: cat_liked, glyph: $mdi_heart, caption: "Liked", col: 1, row: 1, bg: 0x14161B, fg: white, glyph_font: mdi_media_28, caption_font: oswald_20}}
+                  on_click: [{script.execute: {id: browse_open, view: 3}}]
+              - button:
+                  <<: !include {file: widgets/category_tile.yaml, vars: {uid: cat_genres, glyph: $mdi_shape, caption: "Genres", col: 2, row: 1, bg: 0x14161B, fg: white, glyph_font: mdi_media_28, caption_font: oswald_20}}
+                  on_click: [{script.execute: {id: browse_open, view: 3}}]
+
+        # ─── View 1: Playlists grid (drives the same favourites as Pick Music) ───
+        - obj:
+            id: browse_v_playlists
+            hidden: true
+            align: TOP_MID
+            y: 92
+            width: 672
+            height: 524
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1), FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1)]
+              pad_column: 14
+              pad_row: 14
+            widgets:
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_0, src: pm_cover_img_0, caption: "", col: 0, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 0}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_1, src: pm_cover_img_1, caption: "", col: 1, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 1}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_2, src: pm_cover_img_2, caption: "", col: 2, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 2}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_3, src: pm_cover_img_3, caption: "", col: 3, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 3}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_4, src: pm_cover_img_4, caption: "", col: 0, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 4}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_5, src: pm_cover_img_5, caption: "", col: 1, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 5}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_6, src: pm_cover_img_6, caption: "", col: 2, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 6}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: bpl_7, src: pm_cover_img_7, caption: "", col: 3, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: pick_play, idx: 7}}]
+
+        # ─── View 2: Artists grid (top artists; tap plays artist context) ───
+        - obj:
+            id: browse_v_artists
+            hidden: true
+            align: TOP_MID
+            y: 92
+            width: 672
+            height: 524
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1), FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1)]
+              pad_column: 14
+              pad_row: 14
+            widgets:
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_0, src: ar_cover_img_0, caption: "", col: 0, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 0}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_1, src: ar_cover_img_1, caption: "", col: 1, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 1}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_2, src: ar_cover_img_2, caption: "", col: 2, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 2}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_3, src: ar_cover_img_3, caption: "", col: 3, row: 0, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 3}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_4, src: ar_cover_img_4, caption: "", col: 0, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 4}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_5, src: ar_cover_img_5, caption: "", col: 1, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 5}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_6, src: ar_cover_img_6, caption: "", col: 2, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 6}}]
+              - button:
+                  <<: !include {file: widgets/cover_tile.yaml, vars: {uid: ar_cov_7, src: ar_cover_img_7, caption: "", col: 3, row: 1, caption_font: oswald_18}}
+                  on_click: [{script.execute: {id: browse_play_artist, idx: 7}}]
+
+        # ─── View 3: Albums / Recent / Liked / Genres — TODO drill-down ───
+        # These need LIVE SpotifyPlus service round-trips that are NOT static HA
+        # state (Albums: spotifyplus.get_artist_albums then get_album_tracks; Recent:
+        # spotifyplus.get_player_recent_tracks; Liked: get_track_favorites; Genres:
+        # get_browse_categorys_list + get_category_playlists). The panel can't make
+        # response-returning calls without a backing template sensor, so this view is
+        # a marked placeholder until the HA glue publishes those lists (one template
+        # sensor per category, same names_8/ids_8/cover_N scheme as artists). The
+        # SERVICE-CALL SHAPE to add on the HA side (templates/spotify_panel.yaml):
+        #   service: spotifyplus.get_artist_albums  data:{entity_id, market, ...}
+        #   service: spotifyplus.get_album_tracks   data:{entity_id, album_id}
+        #   service: spotifyplus.get_player_recent_tracks data:{entity_id, limit}
+        #   service: spotifyplus.get_track_favorites data:{entity_id, limit_total}
+        # then play a chosen track/album via media_play_uri(spotify:album:/track:…).
+        - obj:
+            id: browse_v_recent
+            hidden: true
+            align: TOP_MID
+            y: 92
+            width: 672
+            height: 524
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            widgets:
+              - label: {clickable: false, align: CENTER, y: -24, text: $mdi_compass, text_font: mdi_media_40, text_color: gray700}
+              - label: {clickable: false, align: CENTER, y: 36, text: "Coming soon", text_font: oswald_24, text_color: gray500}
+              - label: {clickable: false, align: CENTER, y: 70, text: "Use Pick Music or Artists for now", text_font: oswald_18, text_color: gray700}
+
+  # ═════════════════════ MODAL OVERLAYS ═════════════════════
+  # Popups in the library's top_layer framework: the shared popup_scrim (from
+  # popup_system.yaml) dims the hub behind them and an outside-tap runs popup_close
+  # (extended above to hide both). Because the scrim is a full-screen clickable
+  # sibling, swipe gestures land on it — the hub page underneath does not navigate.
+  top_layer:
+    widgets:
+      # ─── Rooms modal (shell — grouping content lands in ) ───
+      - obj:
+          id: rooms_modal
+          hidden: true
+          align: center
+          width: 664
+          height: 632
+          bg_color: very_dark_gray
+          bg_opa: cover
+          radius: 24
+          border_width: 1
+          border_color: gray700
+          pad_all: 16
+          scrollable: false
+          widgets:
+            - label: {align: TOP_LEFT, x: 6, y: 8, text: "Rooms", styles: header_title}
+            - button:
+                id: btn_close_rooms
+                align: TOP_RIGHT
+                x: 0
+                y: 0
+                width: 52
+                height: 52
+                radius: 26
+                # otg / Option B: gradient + gray700 ring so it reads on the sheet.
+                bg_color: 0x3D4250
+                bg_grad_color: 0x23262D
+                bg_grad_dir: VER
+                bg_opa: cover
+                border_width: 1
+                border_color: gray700
+                widgets:
+                  - label: {align: center, text: $mdi_close, text_font: mdi_card_28, text_color: gray400}
+                on_click:
+                  - script.execute: popup_close
+            # Selection summary (updated by refresh_device_sel). Green dot on a tile
+            # = that room is currently playing (from the .22 topology sensor).
+            - label: {id: lbl_rooms_status, align: TOP_MID, y: 12, text_font: oswald_18, text_color: gray400, text: "Tap rooms to group"}
+            # Staged multi-select grid — 7 Sonos rooms.
+            # First tap = coordinator (solid ep_blue); further taps = members
+            # (ep_blue outline); tap again to deselect. Group joins; Ungroup dissolves.
+            - obj:
+                align: TOP_MID
+                y: 50
+                width: 624
+                height: 380
+                bg_opa: TRANSP
+                border_width: 0
+                pad_all: 0
+                scrollable: false
+                layout:
+                  type: GRID
+                  grid_columns: [FR(1), FR(1), FR(1)]
+                  grid_rows: [FR(1), FR(1), FR(1)]
+                  pad_column: 12
+                  pad_row: 12
+                widgets:
+                  - !include {file: widgets/tile_media_device.yaml, vars: {tile_id: m_living,   col: 0, row: 0, caption: "${media_room_0_caption}", player: "media_player.${media_room_0_slug}"}}
+                  - !include {file: widgets/tile_media_device.yaml, vars: {tile_id: m_kitchen,  col: 1, row: 0, caption: "${media_room_1_caption}", player: "media_player.${media_room_1_slug}"}}
+                  - !include {file: widgets/tile_media_device.yaml, vars: {tile_id: m_kitchen2, col: 2, row: 0, caption: "${media_room_2_caption}", player: "media_player.${media_room_2_slug}"}}
+                  - !include {file: widgets/tile_media_device.yaml, vars: {tile_id: m_office,   col: 0, row: 1, caption: "${media_room_3_caption}", player: "media_player.${media_room_3_slug}"}}
+                  - !include {file: widgets/tile_media_device.yaml, vars: {tile_id: m_bedroom,  col: 1, row: 1, caption: "${media_room_4_caption}", player: "media_player.${media_room_4_slug}"}}
+                  - !include {file: widgets/tile_media_device.yaml, vars: {tile_id: m_garage,   col: 2, row: 1, caption: "${media_room_5_caption}", player: "media_player.${media_room_5_slug}"}}
+                  - !include {file: widgets/tile_media_device.yaml, vars: {tile_id: m_roam,     col: 0, row: 2, caption: "${media_room_6_caption}", player: "media_player.${media_room_6_slug}"}}
+            # (No legend — the solid/outline tiles + play/pause glyphs are self-evident, .)
+            # Action bar: Group (detach staged + join -> coordinator) / Ungroup (dissolve + clear).
+            - obj:
+                align: BOTTOM_MID
+                y: -2
+                width: 624
+                height: 84
+                bg_opa: TRANSP
+                border_width: 0
+                pad_all: 0
+                scrollable: false
+                layout: {type: flex, flex_flow: ROW, flex_align_main: SPACE_EVENLY, flex_align_cross: CENTER, pad_column: 16}
+                widgets:
+                  - button:
+                      id: btn_group
+                      width: 296
+                      height: 72
+                      radius: 16
+                      # otg / Option B: ep_green gradient to match the tile language.
+                      bg_color: 0x8DE04A
+                      bg_grad_color: 0x6BB82E
+                      bg_grad_dir: VER
+                      bg_opa: cover
+                      scrollable: false
+                      layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                      widgets:
+                        - label: {text: $mdi_link_variant, text_font: mdi_icon_40, text_color: black}
+                        - label: {text: "Group", text_font: oswald_20, text_color: black}
+                      on_click:
+                        # Commit & close: dismiss the modal IMMEDIATELY. Hide the modal
+                        # + scrim INLINE first — a bare `script.execute: popup_close`
+                        # only queues the hide, which the trailing 1000ms delay in this
+                        # same handler defers, so the modal lingered ( bugfix).
+                        # popup_close still runs to honor the framework contract
+                        # (hides sources_modal + clears the auto-close timeout).
+                        - lvgl.widget.hide: rooms_modal
+                        - lvgl.widget.hide: popup_scrim
+                        - script.execute: popup_close
+                        # ── .6: RECONCILE the staged set against the LIVE group ──
+                        # The modal pre-stages from live topology, so Group must behave as
+                        # a group EDITOR, not an additive-only join. Two failures the old
+                        # logic had: (1) it UNJOINED the staged front when that room was a
+                        # member (silencing the room we meant to KEEP); (2) it never
+                        # removed rooms the user DE-staged, and never migrated the
+                        # coordinator. New model:
+                        #   a. Find the live group blob (sonos_g[]) holding the staged
+                        #      front; its members are the CURRENT group.
+                        #   b. UNJOIN every live member the user de-staged. Unjoining the
+                        #      old coordinator is fine — Sonos promotes a remaining member
+                        #      and playback continues there (the desired transfer).
+                        #   c. JOIN the staged set under the staged front (size>=2) so
+                        #      newly-added rooms join AND the front becomes coordinator.
+                        #   d. Re-point the control target at the staged front so the
+                        #      control target can't reference a now-silenced room.
+                        - lambda: |-
+                            id(reconcile_unjoin) = "";
+                            auto &v = id(staged_players);
+                            if (v.empty()) return;
+                            auto slug = [](const std::string& e) -> std::string {
+                              size_t d = e.rfind('.'); return d == std::string::npos ? e : e.substr(d + 1);
+                            };
+                            std::string frontSlug = slug(v.front());
+                            // Whole-token match over a comma/space member list —
+                            // substring would let "kitchen" match "kitchen_2".
+                            auto in_members = [](const std::string& m, const std::string& sl) -> bool {
+                              std::string t;
+                              for (size_t j = 0; j <= m.size(); j++) {
+                                char c = (j < m.size()) ? m[j] : ',';
+                                if (c == ',' || c == ' ') { if (t == sl) return true; t.clear(); }
+                                else t += c;
+                              }
+                              return false;
+                            };
+                            // Live members of the group the front currently belongs to.
+                            std::string members;
+                            for (int i = 0; i < 4; i++) {
+                              const std::string &s = id(sonos_g)[i];
+                              if (s.empty()) continue;
+                              std::vector<std::string> f; size_t p = 0;
+                              while (true) { size_t q = s.find('|', p);
+                                f.push_back(q == std::string::npos ? s.substr(p) : s.substr(p, q - p));
+                                if (q == std::string::npos) break; p = q + 1; }
+                              if (f.size() < 8) continue;
+                              if (f[0] == frontSlug || in_members(f[4], frontSlug)) { members = f[4]; break; }
+                            }
+                            if (members.empty()) return;          // standalone / paused → nothing to unjoin
+                            auto inStaged = [&](const std::string& sl) -> bool {
+                              for (auto &e : v) if (slug(e) == sl) return true; return false;
+                            };
+                            // de-staged live members → unjoin CSV (members are comma- or space-joined)
+                            std::string out, tok;
+                            for (size_t i = 0; i <= members.size(); i++) {
+                              char ch = (i < members.size()) ? members[i] : ',';
+                              if (ch == ',' || ch == ' ') {
+                                if (!tok.empty()) {
+                                  if (!inStaged(tok)) { if (!out.empty()) out += ","; out += "media_player." + tok; }
+                                  tok.clear();
+                                }
+                              } else tok += ch;
+                            }
+                            id(reconcile_unjoin) = out;
+                        - if:
+                            condition:
+                              lambda: 'return !id(reconcile_unjoin).empty();'
+                            then:
+                              - homeassistant.action:
+                                  action: media_player.unjoin
+                                  variables:
+                                    members: 'return id(reconcile_unjoin);'
+                                  data_template:
+                                    entity_id: "{{ members.split(',') }}"
+                              - delay: 1000ms       # let Sonos promote the new coordinator
+                        # Add the staged rooms onto the coordinator (front). Joining rooms
+                        # already in the group is a no-op; with the new front as entity_id
+                        # this also re-coordinates a coordinator swap.
+                        - if:
+                            condition:
+                              lambda: 'return id(staged_players).size() >= 2;'
+                            then:
+                              - homeassistant.action:
+                                  action: media_player.join
+                                  variables:
+                                    coord: 'return id(staged_players).front();'
+                                    members: |-
+                                      std::string s; auto &v = id(staged_players);
+                                      for (size_t i = 0; i < v.size(); i++) { if (i) s += ","; s += v[i]; }
+                                      return s;
+                                  data_template:
+                                    entity_id: "{{ coord }}"
+                                    group_members: "{{ members.split(',') }}"
+                        # Re-point the control target at the resulting coordinator (staged
+                        # front) so the cover-art room selector + transport can't diverge
+                        # to a silenced room. Persist via the helper; the mirror repaints.
+                        - if:
+                            condition:
+                              lambda: 'return !id(staged_players).empty();'
+                            then:
+                              - lambda: |-
+                                  id(active_media_player) = id(staged_players).front();
+                                  id(media_active_target) = id(staged_players).front();
+                              - homeassistant.action:
+                                  action: input_text.set_value
+                                  data_template:
+                                    entity_id: ${active_player_helper}
+                                    value: "{{ tgt }}"
+                                  variables:
+                                    tgt: 'return id(active_media_player);'
+                  - button:
+                      id: btn_ungroup
+                      width: 296
+                      height: 72
+                      radius: 16
+                      # otg / Option B: slate gradient + gray700 ring so it reads on the sheet.
+                      bg_color: 0x3D4250
+                      bg_grad_color: 0x23262D
+                      bg_grad_dir: VER
+                      bg_opa: cover
+                      border_width: 1
+                      border_color: gray700
+                      scrollable: false
+                      layout: {type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 10}
+                      widgets:
+                        - label: {text: $mdi_link_off, text_font: mdi_icon_40, text_color: white}
+                        - label: {text: "Ungroup", text_font: oswald_20, text_color: white}
+                      on_click:
+                        # Dissolve: unjoin every staged room, then clear the staging.
+                        - if:
+                            condition:
+                              lambda: 'return !id(staged_players).empty();'
+                            then:
+                              - homeassistant.action:
+                                  action: media_player.unjoin
+                                  variables:
+                                    members: |-
+                                      std::string s; auto &v = id(staged_players);
+                                      for (size_t i = 0; i < v.size(); i++) { if (i) s += ","; s += v[i]; }
+                                      return s;
+                                  data_template:
+                                    entity_id: "{{ members.split(',') }}"
+                        - lambda: 'id(staged_players).clear();'
+                        - script.execute: refresh_device_sel
+      # ─── Playlists modal (shell — SpotifyPlus list lands in ) ───
+      - obj:
+          id: sources_modal
+          hidden: true
+          align: center
+          width: 664
+          height: 632
+          bg_color: very_dark_gray
+          bg_opa: cover
+          radius: 24
+          border_width: 1
+          border_color: gray700
+          pad_all: 16
+          scrollable: false
+          widgets:
+            - label: {align: TOP_LEFT, x: 6, y: 8, text: "Playlists", styles: header_title}
+            - button:
+                id: btn_close_sources
+                align: TOP_RIGHT
+                x: 0
+                y: 0
+                width: 52
+                height: 52
+                radius: 26
+                bg_color: very_dark_gray
+                widgets:
+                  - label: {align: center, text: $mdi_close, text_font: mdi_card_28, text_color: white}
+                on_click:
+                  - script.execute: popup_close
+            # Sub-caption. Tiles populate from the SpotifyPlus favourites glue
+            #; empty list -> all tiles hidden, only this line shows.
+            - label: {id: lbl_sources_status, align: TOP_MID, y: 12, text_font: oswald_18, text_color: gray400, text: "Your favourites · tap to play"}
+            # 4×2 grid of colour-gradient playlist tiles.
+            # Glyph + gradient per cell are decorative (fixed); the name comes from
+            # the names_8 text_sensor and the tap plays playlist `idx` on the
+            # active coordinator. No remote cover art (P4-impractical, see widget).
+            - obj:
+                align: TOP_MID
+                y: 50
+                width: 632
+                height: 330
+                bg_opa: TRANSP
+                border_width: 0
+                pad_all: 0
+                scrollable: false
+                layout:
+                  type: GRID
+                  grid_columns: [FR(1), FR(1), FR(1), FR(1)]
+                  grid_rows: [FR(1), FR(1)]
+                  pad_column: 12
+                  pad_row: 12
+                widgets:
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_0, idx: 0, col: 0, row: 0, glyph: $mdi_heart,               grad_top: 0x6A4FB0, grad_bottom: 0x2A1F52}}
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_1, idx: 1, col: 1, row: 0, glyph: $mdi_compass,             grad_top: 0x1F6B63, grad_bottom: 0x103B37}}
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_2, idx: 2, col: 2, row: 0, glyph: $mdi_guitar_acoustic,     grad_top: 0x6B4A1F, grad_bottom: 0x3A2810}}
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_3, idx: 3, col: 3, row: 0, glyph: $mdi_headphones,          grad_top: 0x2A3F6B, grad_bottom: 0x15203A}}
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_4, idx: 4, col: 0, row: 1, glyph: $mdi_music_note,          grad_top: 0x7A2F57, grad_bottom: 0x3A1530}}
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_5, idx: 5, col: 1, row: 1, glyph: $mdi_white_balance_sunny, grad_top: 0x2F6B3A, grad_bottom: 0x163A20}}
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_6, idx: 6, col: 2, row: 1, glyph: $mdi_run_fast,            grad_top: 0x8A3320, grad_bottom: 0x4A1A10}}
+                  - !include {file: widgets/tile_playlist.yaml, vars: {tile_id: pl_tile_7, idx: 7, col: 3, row: 1, glyph: $mdi_saxophone,           grad_top: 0x3A4555, grad_bottom: 0x1F2530}}

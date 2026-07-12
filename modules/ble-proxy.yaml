@@ -1,0 +1,20 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ble-proxy.yaml — optional BLE proxy / presence tracker package
+#.
+#
+# The ESP32-P4 has no native radio — BLE runs through the hosted ESP32-C6
+# co-processor (esp32_hosted, declared in hardware/p4-86-panel.yaml).
+# esp32_ble_tracker scans for BLE advertisements; bluetooth_proxy relays them to
+# Home Assistant so the panel acts as a BLE proxy / presence tracker.
+#
+# Gate by PACKAGE PRESENCE: a panel that wants BLE includes
+#   ble_proxy: !include modules/ble-proxy.yaml
+# A panel that doesn't (e.g. Hallway, sat beside the alarm keypad) omits the
+# line — nothing BLE is then compiled in.
+# ─────────────────────────────────────────────────────────────────────────────
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+bluetooth_proxy:
+  active: true

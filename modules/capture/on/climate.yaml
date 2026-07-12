@@ -1,0 +1,4 @@
+lvgl_screenshot:
+  pages:
+    - {name: climate,  page: climate_page}
+    - {name: hotwater, page: hotwater_page}

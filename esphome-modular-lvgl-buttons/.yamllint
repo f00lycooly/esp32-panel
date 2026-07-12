@@ -1,0 +1,40 @@
+---
+# yamllint configuration for ESPHome user configs.
+# ESPHome YAML uses lots of long lines, !include / !lambda tags, and
+# inconsistent indentation across hand-written packages, so we relax most
+# stylistic rules and focus on real syntax errors.
+
+extends: default
+
+rules:
+  line-length: disable
+  indentation: disable
+  comments-indentation: disable
+  comments: disable
+  document-start: disable
+  truthy:
+    allowed-values: ["true", "false", "on", "off", "True", "False"]
+    check-keys: false
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1
+  empty-lines:
+    max: 2
+    max-start: 1
+    max-end: 1
+  trailing-spaces: enable
+  new-line-at-end-of-file: enable
+  key-duplicates: enable
+  octal-values: enable
+  colons:
+    max-spaces-after: -1
+    max-spaces-before: -1
+  commas:
+    max-spaces-before: -1
+
+ignore: |
+  .git/
+  secrets.yaml
+  **/._*
+  ._*

@@ -1,0 +1,46 @@
+---
+# Popup button
+# Short click opens a popup widget (defined in top_layer by a popup package).
+#
+# vars:
+#   uid:          unique identifier
+#   row:          grid row
+#   column:       grid column
+#   text:         tile label
+#   icon:         icon glyph (e.g. $mdi_information_box)
+#   row_span:     (default: 1)
+#   column_span:  (default: 1)
+#   page_id:      parent page (default: main_page)
+#   popup_id:     id of the popup widget to show (required, e.g. popup_info)
+
+lvgl:
+  pages:
+    - id: !extend ${page_id | default("main_page")}
+      widgets:
+        - container:
+            id: ${uid}
+            grid_cell_row_pos: ${row}
+            grid_cell_column_pos: ${column}
+            grid_cell_row_span: ${row_span | default(1)}
+            grid_cell_column_span: ${column_span | default(1)}
+            grid_cell_x_align: stretch
+            grid_cell_y_align: stretch
+            widgets:
+              - button:
+                  id: button_${uid}
+                  widgets:
+                    - label:
+                        text_font: $icon_font
+                        align: top_left
+                        id: icon_${uid}
+                        text_color: $label_off_color
+                        text: ${icon}
+                    - label:
+                        align: bottom_left
+                        id: label_${uid}
+                        text_color: $label_off_color
+                        text: ${text}
+                  on_short_click:
+                    then:
+                      - lvgl.widget.show: popup_scrim
+                      - lvgl.widget.show: ${popup_id}

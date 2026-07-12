@@ -1,0 +1,56 @@
+# page-swelligence.yaml — SWELLIGENCE conditions FUNCTION (F4) package.
+# Included as a package by waveshare-p4-86-panel.yaml.
+#
+# ── MANIFEST/CODEGEN ───────────────────────────────────
+# This file is now a thin SHELL. The per-spot HA bindings and lvgl pages are
+# GENERATED from swell-manifest.yaml by scripts/gen_swell_panel.py into
+# modules/generated/swell-*.yaml, and !included below. To add/remove a spot or
+# sport, edit the manifest and run `make generate` (wired into validate/compile);
+# never hand-edit the generated files.
+#
+# Owns one horizontal swipe page per spot in the 2D nav (function 4). Swipe ←/→
+# changes spot; ↑/↓ changes function. Each page is the NOW dashboard: headline
+# gauge + verdict, wind compass, tide module + sparkline, daylight, conditions.
+# The widget LAYOUT template is modules/swell-spot-body.yaml (stamped per spot by
+# the generated pages); this shell only carries the shared fonts.
+#
+# Honesty (carried from the scorer, do not fake): tide state is labelled
+# modelled/overlay at source; verdict is the scorer's own band. No onshore/
+# offshore safety call (deferred upstream).
+#
+# Top bar: the singleton (modules/top-bar.yaml) draws battery·clock·cog on
+# top_layer over all pages; this page draws NO top bar and keeps content below
+# y=72. LVGL 9.6 — no SVG/CSS/blur. Decorative children are clickable:false.
+#
+# nav: function 4's page count + page matrix row are GENERATED
+# into modules/generated/swell-nav.yaml as ${swell_npages}/${swell_matrix_row} and
+# consumed by the nav2d contract in waveshare-p4-86-panel.yaml — no hand-edited nav.
+
+font:
+  # Conditions-strip + header glyphs for this page.
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_swell_28
+    size: 28
+    bpp: 4
+    glyphs:
+      - $mdi_weather_windy       # wind / gust
+      - $mdi_waves               # tide
+      - $mdi_weather_sunset      # sunset / daylight left
+      - $mdi_sail_boat           # spot / water type
+  - file: 'assets/fonts/materialdesignicons-webfont.ttf'
+    id: mdi_swell_40
+    size: 40
+    bpp: 4
+    glyphs:
+      # Headline sport marker — chosen at runtime from headline_sport.
+      - $mdi_kitesurfing         # kitesurf
+      - $mdi_surfing             # wingfoil (board sport)
+      - $mdi_rowing              # sup (stand-up paddle)
+      - $mdi_sail_boat           # fallback / unknown sport
+
+# Per-spot HA bindings — GENERATED from swell-manifest.yaml (do not hand-edit).
+text_sensor: !include generated/swell-text-sensors.yaml
+sensor: !include generated/swell-sensors.yaml
+
+lvgl:
+  pages: !include generated/swell-pages.yaml

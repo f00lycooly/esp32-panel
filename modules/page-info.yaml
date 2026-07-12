@@ -1,0 +1,17 @@
+# page-info.yaml — thin wrapper around the vendored library info page so it
+# self-registers for display capture like every other page.
+#
+# The info page itself lives in the agillis library
+# (esphome-modular-lvgl-buttons/pages/info.yaml) and is NOT one of our modules,
+# so it can't carry its own capture gate. This wrapper re-exports it unchanged
+# (same `info_screen` page id, same swipe-ring slot — the device includes THIS
+# at the exact position it used to include the library file) and adds the
+# capture registration alongside.
+#
+# Capture is inert unless the device includes modules/display-capture.yaml
+# (capture_mode "on"); see modules/capture/. The `../` prefix matches the
+# other module→library includes and is rewritten to `../` on deploy by the
+# Makefile.
+packages:
+  page: !include ../esphome-modular-lvgl-buttons/pages/info.yaml
+  capture_info: !include capture/${capture_mode}/info.yaml

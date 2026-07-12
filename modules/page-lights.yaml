@@ -1,0 +1,96 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# page-lights.yaml — Lights page package for the panel.
+# Included as a package by waveshare-p4-86-panel.yaml.
+# Owns: the lights_page (2x2 toggle grid) plus the four HA light-state
+# text_sensors that tint its icons/borders.
+# Extracted verbatim from application.yaml (lights_page: L1646-1730,
+# text_sensors: L1164-1199).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Display-capture self-registration: this page owns its
+# screenshot endpoint. Inert unless the device includes
+# modules/display-capture.yaml (capture_mode "on"). See modules/capture/.
+packages:
+  capture_lights: !include capture/${capture_mode}/lights.yaml
+
+# ───── HA state strings for tiles that toggle/route on entity state ─────
+text_sensor:
+  # Lights (lights_page — ): "on"/"off" drive tile glow + icon colour.
+  - platform: homeassistant
+    id: light_sofa_state
+    entity_id: ${light_1_entity}
+    on_value:
+      - lambda: !lambda |-
+          bool on = (x == "on");
+          lv_obj_set_style_text_color(id(ic_sofa), on ? lv_color_hex(0xE7C12C) : lv_color_hex(0x9E9E9E), 0);
+          lv_obj_set_style_border_width(id(btn_light_sofa), on ? 3 : 0, 0);
+  - platform: homeassistant
+    id: light_hobby_state
+    entity_id: ${light_2_entity}
+    on_value:
+      - lambda: !lambda |-
+          bool on = (x == "on");
+          lv_obj_set_style_text_color(id(ic_hobby), on ? lv_color_hex(0xE7C12C) : lv_color_hex(0x9E9E9E), 0);
+          lv_obj_set_style_border_width(id(btn_light_hobby), on ? 3 : 0, 0);
+  - platform: homeassistant
+    id: light_cabinet_state
+    entity_id: ${light_3_entity}
+    on_value:
+      - lambda: !lambda |-
+          bool on = (x == "on");
+          lv_obj_set_style_text_color(id(ic_cabinet), on ? lv_color_hex(0xE7C12C) : lv_color_hex(0x9E9E9E), 0);
+          lv_obj_set_style_border_width(id(btn_light_cabinet), on ? 3 : 0, 0);
+  - platform: homeassistant
+    id: light_backlight_state
+    entity_id: light.${name}_lcd_backlight
+    on_value:
+      - lambda: !lambda |-
+          bool on = (x == "on");
+          lv_obj_set_style_text_color(id(ic_backlight), on ? lv_color_hex(0xE7C12C) : lv_color_hex(0x9E9E9E), 0);
+          lv_obj_set_style_border_width(id(btn_light_backlight), on ? 3 : 0, 0);
+
+lvgl:
+  pages:
+    # ═════════════════════ LIGHTS ═════════════════════
+    - id: lights_page
+      styles: page_style
+      <<: !include
+        file: ../esphome-modular-lvgl-buttons/common/swipe_navigation.yaml
+      widgets:
+        - button:
+            id: back_lights
+            align: TOP_LEFT
+            x: 8
+            y: 8
+            width: 56
+            height: 56
+            radius: 28
+            bg_color: very_dark_gray
+            widgets:
+              - label: {align: center, text: $mdi_chevron_left, text_font: mdi_card_28, text_color: white}
+            on_click:
+              - lvgl.page.show: main_page
+        - label: {align: TOP_MID, y: 18, text: "Lights", styles: header_title}
+        # Layout-only grid container — clickable:false so gap taps/swipes fall
+        # through to the page (LVGL v9 obj-clickable-default trap).
+        - obj:
+            align: BOTTOM_MID
+            y: -16
+            width: 700
+            height: 580
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            clickable: false
+            layout:
+              type: GRID
+              grid_columns: [FR(1), FR(1)]
+              grid_rows: [FR(1), FR(1)]
+              pad_column: 16
+              pad_row: 16
+            widgets:
+              - !include {file: widgets/tile_toggle.yaml, vars: {tile_id: btn_light_sofa,      col: 0, row: 0, icon_id: ic_sofa,      glyph: $mdi_sofa,              caption: "${light_1_caption}",    ha_action: light.toggle, entity: "${light_1_entity}"}}
+              - !include {file: widgets/tile_toggle.yaml, vars: {tile_id: btn_light_hobby,     col: 1, row: 0, icon_id: ic_hobby,     glyph: $mdi_lightbulb,         caption: "${light_2_caption}",   ha_action: light.toggle, entity: "${light_2_entity}"}}
+              - !include {file: widgets/tile_toggle.yaml, vars: {tile_id: btn_light_cabinet,   col: 0, row: 1, icon_id: ic_cabinet,   glyph: $mdi_led_strip_variant, caption: "${light_3_caption}", ha_action: light.toggle, entity: "${light_3_entity}"}}
+              - !include {file: widgets/tile_toggle.yaml, vars: {tile_id: btn_light_backlight, col: 1, row: 1, icon_id: ic_backlight, glyph: $mdi_lightbulb_outline,  caption: Panel,   ha_action: light.toggle, entity: "light.${name}_lcd_backlight"}}
