@@ -16,3 +16,8 @@ glados_by_browen2o*.png
 
 # Optional site-specific deploy targets (see Makefile tail)
 deploy.local.mk
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

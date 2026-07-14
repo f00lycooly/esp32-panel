@@ -1,0 +1,8 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "esp32_panel__a4de79a6",
+  "project_id": "16cebf5e-d45a-44b9-91a0-ffd24b0850ab",
+  "global_dolt_database": "beads_global"
+}
