@@ -21,3 +21,8 @@ deploy.local.mk
 .dolt/
 *.db
 .beads-credential-key
+
+# Bead exports are NOT tracked in this public repo: they carry private infra
+# details (LAN IPs, internal hostnames, owner email). The central Dolt server
+# is the beads source of truth; the local JSONL is a passive export.
+.beads/*.jsonl
