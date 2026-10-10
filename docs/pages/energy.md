@@ -34,11 +34,11 @@ source→destination path since midnight (PV/Battery/Grid →
 Home/Battery/Grid/EV/Heat-pump). The panel asks HA's recorder for today's
 5-minute changes on the same kWh counters your Energy dashboard uses
 (`recorder.get_statistics`, on HA connect and every 5 minutes). HA splits each
-5-minute bucket the way its energy-distribution card does — PV's export and
-battery charge come first and the rest of PV serves the home; any export or
-charge PV cannot cover is attributed grid→battery, then battery→grid — and
-the EV and heat pump take a share of each source in proportion to that
-bucket's home mix. The bucket totals are summed, so time-of-day patterns
+5-minute bucket with the same priority as the previous instantaneous flow
+meters — PV serves the home first, then charges the battery, then exports;
+the rest of the load comes from the battery, then the grid — and the EV and
+heat pump take a share of each source in proportion to that bucket's home
+mix. The bucket totals are summed, so time-of-day patterns
 (e.g. overnight grid charging) are kept, and the paths land close to
 per-second flow meters. Short-term statistics compile every 5 minutes and the
 panel polls unaligned, so totals trail live readings by up to ~10 minutes.

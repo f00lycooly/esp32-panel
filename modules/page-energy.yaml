@@ -556,8 +556,9 @@ script:
   # ════════════════ "Today" day totals (recorder statistics) ════════════════
   # One recorder.get_statistics call returns today's 5-minute changes on the
   # Energy-dashboard kWh counters. The response_template splits EVERY 5-minute
-  # bucket into flow paths HA-side (the way HA's energy-distribution card does)
-  # and sums them, so the panel receives the 13 path totals ready to draw.
+  # bucket into flow paths HA-side, with the same PV-to-home-first priority as
+  # the previous instantaneous flow meters, and sums them, so the panel
+  # receives the 13 path totals ready to draw.
   # Per-bucket allocation keeps time-of-day right (e.g. overnight grid→battery
   # charging is not netted against daytime PV). Short-term statistics compile
   # every 5 min and this polls every 5 min unaligned, so totals trail live by up
@@ -611,24 +612,20 @@ script:
               {% set dis = [s.dis.get(b, 0), 0] | max %}
               {% set ev = [s.ev.get(b, 0), 0] | max %}
               {% set hp = [s.hp.get(b, 0), 0] | max %}
-              {# PV serves home first; export + charge PV cannot cover is
-                 grid->battery, then battery->grid #}
-              {% set short = [exp + chg - pv, 0] | max %}
-              {% set gb = [short, chg, imp] | min %}
-              {% set bg = [short - gb, exp, dis] | min %}
-              {% set rest = short - gb - bg %}
-              {% set pvh = [pv - exp - chg, 0] | max %}
-              {% set pvb = chg - gb %}
-              {% set pvg = exp - bg %}
-              {# losses/jitter: scale PV outflows down so they sum to pv #}
-              {% set f = pv / (pvb + pvg) if rest > 0 and pvb + pvg > 0 else 1 %}
-              {% set pvb = pvb * f %}
-              {% set pvg = pvg * f %}
-              {% set bh = dis - bg %}
-              {% set gh = imp - gb %}
+              {# Same priority as the previous instantaneous flow meters: PV
+                 serves home first, then charges the battery, then exports;
+                 the rest of the load comes from the battery, then the grid.
+                 PV and battery outflows sum to pv / dis by construction. #}
+              {% set load = [pv + imp + dis - exp - chg, 0] | max %}
+              {% set pvh = [pv, load] | min %}
+              {% set pvb = [pv - pvh, chg] | min %}
+              {% set pvg = pv - pvh - pvb %}
+              {% set bh = [dis, load - pvh] | min %}
+              {% set bg = dis - bh %}
+              {% set gb = chg - pvb %}
+              {% set gh = [load - pvh - bh, 0] | max %}
               {# EV / HP take a share of each home source in proportion to
                  this bucket's home source mix, capped at the load #}
-              {% set load = pvh + bh + gh %}
               {% set c = load / (ev + hp) if ev + hp > load else 1 %}
               {% set ev = ev * c %}
               {% set hp = hp * c %}
