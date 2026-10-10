@@ -41,9 +41,11 @@ PSRAM, ESP-Hosted, display, touch and audio settings are taken from
   The host library is pinned to **2.12.12**, and the matching C6 firmware image
   is embedded in the panel firmware (`firmware/esp-hosted/`), so the
   `ESP-Hosted Firmware` update entity can bring the C6 to the same version over
-  SDIO without needing WiFi. After flashing a firmware that changes the pin,
-  press **Install** on that entity in Home Assistant; a host/C6 version
-  mismatch can wedge the WiFi link ~30 s after boot. Bump the pin, the image
+  SDIO without needing WiFi. A host/C6 version mismatch can wedge the WiFi
+  link ~30 s after boot, so the panel checks ~15 s after boot and, if the C6
+  differs from the embedded image, flashes it automatically (at most 3
+  attempts across reboots; after that it logs an error and the entity's
+  **Install** button or a USB flash is the fallback). Bump the pin, the image
   and its `sha256` together.
 - **lwIP TCP tuning** — the panel↔C6 RPC round-trip (~65 ms) makes default TCP
   windows the throughput bottleneck (~88 KB/s), not the PHY. The module raises

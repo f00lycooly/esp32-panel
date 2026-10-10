@@ -24,6 +24,35 @@ esphome:
   # No `project:` here — ui-foundation.yaml stamps ${project_name}/${project_version}
   # (per-panel identity); a second project block in the package merge would
   # silently fight it.
+  on_boot:
+    # Bring the C6 to the embedded esp_hosted version without depending on the
+    # WiFi link a mismatched C6 may wedge (~30 s after boot): flash over SDIO
+    # once the link has settled. Capped at 3 attempts across reboots.
+    - priority: -100
+      then:
+        - delay: 15s
+        - update.check: c6_firmware
+        - delay: 2s
+        - if:
+            condition:
+              update.is_available: c6_firmware
+            then:
+              - if:
+                  condition:
+                    lambda: 'return id(c6_update_attempts) < 3;'
+                  then:
+                    - lambda: 'id(c6_update_attempts) += 1;'
+                    - logger.log:
+                        level: WARN
+                        format: "C6 firmware differs from the embedded image; flashing (attempt %d/3)"
+                        args: ['id(c6_update_attempts)']
+                    - update.perform: c6_firmware
+                  else:
+                    - logger.log:
+                        level: ERROR
+                        format: "C6 firmware still mismatched after 3 attempts; install it manually"
+            else:
+              - lambda: 'id(c6_update_attempts) = 0;'
 
 esp32:
   board: esp32-p4-evboard
@@ -151,6 +180,14 @@ update:
     type: embedded
     path: ../../firmware/esp-hosted/network_adapter_esp32c6-2.12.12.bin
     sha256: bad97ce81e7fcf5f3365898f633b80941ae863db9c754d87a78f89c8f61f2e94
+
+globals:
+  # Auto-flash attempts for a C6 that doesn't match the embedded image; capped
+  # so a failing flash can't repeat on every boot. Reset once versions match.
+  - id: c6_update_attempts
+    type: int
+    restore_value: true
+    initial_value: "0"
 
 # -------------------------------------------
 # Bluetooth tracker — EXTRACTED to a gateable package.
