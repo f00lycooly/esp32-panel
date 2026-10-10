@@ -35,10 +35,7 @@ substitutions:
   log_level: INFO
   freertos_runtime_stats: "n"
 
-  # ── Media binding (per-panel — each panel needs its own mirror + helper,
-  #    see homeassistant/examples/media_mirror.yaml) ──
-  media_mirror_entity: sensor.kitchen_active_media          # CHANGE
-  active_player_helper: input_text.kitchen_active_player    # CHANGE
+  # ── Media binding ──
   # Seed the voice target speaker to THIS room (only seeds the first-boot
   # value of the runtime-editable target_speaker text; an NVS-persisted value
   # still wins on an already-set device).

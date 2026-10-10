@@ -67,8 +67,6 @@ restart HA.
 
 | Package | Provides | Feeds |
 |---|---|---|
-| `media_mirror.yaml` | `input_text.panel_active_player` helper + `sensor.panel_active_media` mirror — one stable entity reflecting whichever media player the panel is targeting (title, artist, artwork, volume) | [Main / now-playing](pages/main.md), now-playing dock |
-| `sonos_topology.yaml` | `sensor.sonos_topology` — live speaker-group topology (coordinators + members) | [Multi-room audio](pages/media.md), Rooms modal |
 | `spotify_panel.yaml` | `sensor.spotify_panel_recent` / `_playlists` / `_artists` — cover-art feeds for the pickers | [Main](pages/main.md) recent row, Pick Music / Browse, [Alarm](pages/alarm.md) music picker |
 | `alarm_panel.yaml` | The alarm page's helper contract: the `input_text.alarm_ringing` / `input_boolean.alarm_snooze_armed` ringing plumbing (the `sensor.scheduled_alarms` roster with rows `a0`–`a5` + `next`, and the backend that stores/fires alarms, is external — Node-RED, AppDaemon or HA automations; see the file header) | [Alarm](pages/alarm.md) |
 
@@ -79,6 +77,12 @@ The [Screensaver](pages/screensaver.md) forecast needs no package either — set
 The [Energy](pages/energy.md) pages need no package either: they bind your
 inverter/charger entities directly and read today's totals from the recorder
 (HA ≥ 2025.10; see the Energy section of `user-config.yaml.example`).
+
+Media needs no package: the panel binds each roster room's
+`media_player.<slug>` directly (title, artist, artwork, volume, group members),
+keeps the selected room on the device and derives the speaker-group topology
+from `group_members` itself. Only the 7 roster rooms are seen, so a new speaker
+needs a roster edit and a re-flash.
 
 The [Timer](pages/timer.md) page needs no package — create a plain HA **timer
 helper** (Settings → Devices & services → Helpers → Timer) and point

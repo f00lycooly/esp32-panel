@@ -46,8 +46,6 @@ The pickers and modals are provided by the media backend module
 
 | Substitution | Meaning | Example |
 |---|---|---|
-| `media_mirror_entity` | Active-media mirror sensor — state drives play/pause glyph; attributes feed title/artist/device/volume/artwork | `sensor.panel_active_media` |
-| `active_player_helper` | `input_text` naming the panel's active player | `input_text.panel_active_player` |
 | `spotify_recent_entity` | Recently-played feed for the cover row | `sensor.spotify_panel_recent` |
 | `spotify_playlists_entity` | Playlist feed for Pick Music | `sensor.spotify_panel_playlists` |
 | `spotify_artists_entity` | Artist feed for Browse | `sensor.spotify_panel_artists` |
@@ -56,16 +54,17 @@ The pickers and modals are provided by the media backend module
 
 ### Home Assistant entities
 
-- `sensor.panel_active_media` + `input_text.panel_active_player` — from
-  [`homeassistant/examples/media_mirror.yaml`](../../homeassistant/examples/media_mirror.yaml)
-  (one package per panel).
 - `sensor.spotify_panel_*` — from
   [`homeassistant/examples/spotify_panel.yaml`](../../homeassistant/examples/spotify_panel.yaml).
 - Follow-Me is a switch on the panel itself (`switch.<panel_name>_follow_me`,
   restored across reboots, default OFF); no HA helper is needed. An external
   follow-me automation must read that switch — the old
   `input_boolean.sonos_follow_me` is no longer written by the panel.
-- `media_player.*` for each roster room (see [media.md](media.md)).
+- `media_player.*` for each roster room (see [media.md](media.md)). Now-playing
+  reads the selected room's state, `media_title`, `media_artist`,
+  `entity_picture` and `volume_level` directly; `media_content_id` marks TV /
+  line-in audio (`x-sonos-htastream` / `x-rincon-stream:`) so it never raises
+  the hero.
 
 If Home Assistant is unreachable at boot, the splash screen self-dismisses
 after 12 s and this page runs in its IDLE state; the settings cog's ring shows

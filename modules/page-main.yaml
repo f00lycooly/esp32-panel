@@ -31,8 +31,9 @@
 #   lambda that READS the M2 sensors via .state (state-owned-by-page convention,
 #   widgets/COMPONENTS.md) — it does NOT depend on M2 pushing into M1 widget ids.
 #   Full-bleed art is a page-LOCAL online_image (np_bg_art) fed by a page-local
-#   text_sensor off ${media_mirror_entity}'s entity_picture, so a crisp
-#   480-px background needs no edit to page-media's 240-px hero image.
+#   text_sensor (np_art_url) that page-media's media_select_sync publishes with
+#   the selected room's entity_picture, so a crisp 480-px background needs no
+#   edit to page-media's 240-px hero image.
 #
 # Cross-package ids (resolve after the package merge): page_style + theme colours
 #   (ep_blue/ep_green/ep_orange/very_dark_gray/gray400/gray500/gray700/gray900/
@@ -229,12 +230,13 @@ online_image:
     on_error: [{lambda: 'id(cov_inflight) = false;'}]
 
 text_sensor:
-  # Page-local art-url feed: the mirror sensor exposes a relative entity_picture
-  # (/api/media_player_proxy/...?token=...). Empty -> revert to gradient fallback.
-  - platform: homeassistant
+  # Page-local art-url feed: the selected room's entity_picture, usually relative
+  # (/api/media_player_proxy/...?token=...). Published (on change only) by
+  # page-media's media_select_sync. Empty -> revert to gradient fallback.
+  - platform: template
     id: np_art_url
-    entity_id: ${media_mirror_entity}
-    attribute: entity_picture
+    internal: true
+    update_interval: never
     on_value:
       - if:
           condition:
@@ -1105,8 +1107,8 @@ script:
   # ───────────── Rooms Overview: tap a card to SWITCH controlled group ( 4b) ─────────────
   # gc_coord[slot] (set by mr_refresh) = the coordinator entity behind the tapped
   # card, or "" for an idle/empty card (no-op). Switching = set active_media_player
-  # + media_active_target and persist via ${active_player_helper}; the
-  # mirror sensors then repaint the hero. (Replaces the old per-row rr_*_toggle/vol.)
+  # + media_active_target, then media_select_sync repaints the hero from the
+  # per-room cache. (Replaces the old per-row rr_*_toggle/vol.)
   - id: gc_tap
     parameters:
       slot: int
@@ -1119,13 +1121,7 @@ script:
                 id(active_media_player) = id(gc_coord)[slot];
                 id(media_active_target) = id(gc_coord)[slot];
                 id(last_manual_ms) = millis();   // .7: explicit pick → hold auto-follow
-            - homeassistant.action:
-                action: input_text.set_value
-                data_template:
-                  entity_id: ${active_player_helper}
-                  value: "{{ tgt }}"
-                variables:
-                  tgt: 'return id(active_media_player);'
+            - script.execute: media_select_sync
             - script.execute: mr_refresh
             # Take control + jump to Now Playing for transport + grouping.
             - lvgl.page.show: main_page

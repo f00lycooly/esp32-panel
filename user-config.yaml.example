@@ -38,12 +38,7 @@ substitutions:
   # gracefully when fetches fail, or run the proxy container — recommended.
   imageproxy_url: "http://homeassistant.local:8088"
 
-  # ── Media: mirror + Spotify feeds ───────────────────────────────────────────
-  # Per-panel "what's playing here" mirror sensor + selection helper. Create
-  # them in HA from homeassistant/examples/media_mirror.yaml (template sensor
-  # following the active player) and an input_text helper for the selection.
-  media_mirror_entity: sensor.panel_active_media          # CHANGE
-  active_player_helper: input_text.panel_active_player    # CHANGE
+  # ── Media: Spotify feeds ────────────────────────────────────────────────────
   # Spotify content feeds (recent / playlists / artists) read by the media
   # pages and the alarm music-picker. Provided by the template package in
   # homeassistant/examples/spotify_panel.yaml (requires the HA Spotify
@@ -58,8 +53,11 @@ substitutions:
   # WHICH rooms fill the slots is config. A "slug" is the entity id minus the
   # media_player. domain; modules rebuild the full id as media_player.${slug}.
   # Slot order also defines the topology→tile index map, so keep slug/caption
-  # pairs aligned. The room-state source is the sonos topology sensor
-  # (homeassistant/examples/sonos_topology.yaml); this roster is the layout.
+  # pairs aligned. Each slot binds media_player.${slug} directly; group
+  # topology is derived on the panel from group_members, so only these rooms
+  # are seen (a new speaker needs a roster edit + re-flash).
+  # Captions are pasted into C++ string literals: they must not contain `"`
+  # or `\`.
   media_local_slug: living_room          # this panel's default play target  # CHANGE
   media_room_0_slug: living_room                                             # CHANGE
   media_room_0_caption: "Living Rm"

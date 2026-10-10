@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# media-room.yaml — one Sonos room slot (package; included 7× by page-media).
+#
+# Binds media_player.${slug} directly and caches what HA pushes into
+# media_rooms::rooms()[${idx}] (modules/media-rooms.h). Every change kicks the
+# debounced media_rooms_changed script (page-media), which re-derives the
+# now-playing sensors and the playback target from the cache. 7 subscriptions
+# per room (49 total) — fine on the P4. TV / line-in is detected from
+# media_content_id alone (see media_rooms::is_tv), so `source` isn't bound.
+#
+# Usage (page-media.yaml):
+#   packages:
+#     media_room_0: !include {file: media-room.yaml, vars: {idx: 0, slug: "${media_room_0_slug}", caption: "${media_room_0_caption}"}}
+#
+# vars: idx (0..6), slug (entity id minus media_player.), caption
+# ─────────────────────────────────────────────────────────────────────────────
+esphome:
+  on_boot:
+    - priority: 800
+      then:
+        - lambda: |-
+            auto &r = media_rooms::rooms()[${idx}];
+            r.slug = "${slug}";
+            r.caption = "${caption}";
+
+text_sensor:
+  # Subscription order doesn't matter: HA forwards each attribute only when its
+  # value changes (delta-only, see media_rooms::set_state for what that means
+  # for stale metadata).
+  - platform: homeassistant
+    id: media_room_${idx}_content
+    entity_id: media_player.${slug}
+    attribute: media_content_id
+    on_value:
+      - lambda: 'media_rooms::set_content(media_rooms::rooms()[${idx}], x);'
+      - script.execute: media_rooms_changed
+  - platform: homeassistant
+    id: media_room_${idx}_title
+    entity_id: media_player.${slug}
+    attribute: media_title
+    on_value:
+      - lambda: 'media_rooms::rooms()[${idx}].title = x;'
+      - script.execute: media_rooms_changed
+  - platform: homeassistant
+    id: media_room_${idx}_artist
+    entity_id: media_player.${slug}
+    attribute: media_artist
+    on_value:
+      - lambda: 'media_rooms::rooms()[${idx}].artist = x;'
+      - script.execute: media_rooms_changed
+  - platform: homeassistant
+    id: media_room_${idx}_art
+    entity_id: media_player.${slug}
+    attribute: entity_picture
+    on_value:
+      - lambda: 'media_rooms::rooms()[${idx}].art = x;'
+      - script.execute: media_rooms_changed
+  # Python-list string, e.g. "['media_player.a', 'media_player.b']"; [0] is
+  # the group coordinator.
+  - platform: homeassistant
+    id: media_room_${idx}_members
+    entity_id: media_player.${slug}
+    attribute: group_members
+    on_value:
+      - lambda: 'media_rooms::rooms()[${idx}].members = media_rooms::parse_members(x);'
+      - script.execute: media_rooms_changed
+  - platform: homeassistant
+    id: media_room_${idx}_state
+    entity_id: media_player.${slug}
+    on_value:
+      - lambda: 'media_rooms::set_state(media_rooms::rooms()[${idx}], x);'
+      - script.execute: media_rooms_changed
+
+sensor:
+  - platform: homeassistant
+    id: media_room_${idx}_volume
+    entity_id: media_player.${slug}
+    attribute: volume_level
+    on_value:
+      - lambda: 'media_rooms::rooms()[${idx}].volume = x;'
+      - script.execute: media_rooms_changed
