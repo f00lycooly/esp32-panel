@@ -19,6 +19,7 @@
 #   make generate               # expand swell-manifest.yaml → modules/generated/
 #   make validate               # esphome config  (schema + codegen; fast)
 #   make compile                # full C++ build
+#   make test                   # host unit tests for panel-side C++ (tests/)
 #   make validate CONTAINER=X   # same, but inside docker container X
 #   make hooks                  # install the secret-scan pre-commit hook
 #   make secret-scan            # run the publish gate manually
@@ -55,7 +56,7 @@ else
   TARGET     := /config/$(DEVICE)
 endif
 
-.PHONY: generate validate compile clean hooks secret-scan check-config
+.PHONY: generate validate compile test clean hooks secret-scan check-config
 
 # Expand swell-manifest.yaml → modules/generated/swell-*.yaml.
 # Runs on the host; generated files are committed.
@@ -95,6 +96,18 @@ validate: check-config
 
 compile: check-config
 	@$(ESPHOME) compile "$(TARGET)"
+
+# Host unit tests for header-only panel C++ (modules/*.h). Needs a C++17
+# compiler only — no ESPHome. Binaries go to build/tests/ (gitignored).
+CXX ?= g++
+TEST_SRCS := $(wildcard $(REPO_DIR)/tests/media/*.cpp)
+test:
+	@mkdir -p "$(REPO_DIR)/build/tests"
+	@for t in $(TEST_SRCS); do \
+	  bin="$(REPO_DIR)/build/tests/$$(basename "$$t" .cpp)"; \
+	  $(CXX) -std=c++17 -Wall -Wextra -Werror -I"$(REPO_DIR)/modules" -o "$$bin" "$$t"; \
+	  "$$bin"; \
+	done
 
 # Local build artifacts only. Never touches a container.
 clean:
