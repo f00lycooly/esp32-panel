@@ -116,39 +116,48 @@ substitutions:
   person_3_name: "Carol"               # CHANGE
 
   # ── Energy ──────────────────────────────────────────────────────────────────
+  # Bind these straight to your inverter / charger integration's entities —
+  # no HA template sensors needed. The panel normalises them itself:
+  #   en_power_scale  "1" if the power entities report kW, "0.001" if W
+  #                   (applies to every *_power entity below)
+  #   en_batt_sign    "1" if battery power is +charge / -discharge, "-1" if the
+  #                   integration signs it the other way round
+  #   en_grid_sign    "1" if grid power is +import / -export, "-1" if it is
+  #                   +export / -import (some inverter integrations ship both
+  #                   conventions, e.g. a W-unit variant signed the other way)
+  en_power_scale: "1"                                                          # CHANGE
+  en_batt_sign: "1"                                                            # CHANGE
+  en_grid_sign: "1"                                                            # CHANGE
   # Shared battery pill (top bar + screensaver + energy page):
-  battery_power_entity: sensor.battery_power      # +charge / -discharge, kW   # CHANGE
+  battery_power_entity: sensor.battery_power      # signed battery power       # CHANGE
   battery_soc_entity: sensor.battery_soc          # %                          # CHANGE
-  # Live node powers for the energy "Now" Sankey. Sign conventions assumed:
-  # all values ≥ 0, import/export split into separate sensors. See
-  # homeassistant/examples/energy_normalised.yaml for template sensors that
-  # normalise a hybrid-inverter integration into this shape.
+  # Live node powers for the energy "Now" page. PV/EV/HP are ≥ 0; grid is ONE
+  # signed net sensor. The consumed-power entity is optional: point it at an
+  # entity that does not exist and the panel derives load = PV + grid − battery.
   en_pv_power_entity: sensor.pv_power                                          # CHANGE
-  en_consumed_power_entity: sensor.house_power                                 # CHANGE
-  en_grid_import_entity: sensor.grid_import_power                              # CHANGE
-  en_grid_export_entity: sensor.grid_export_power                              # CHANGE
+  en_consumed_power_entity: sensor.house_power                                 # CHANGE (optional)
+  en_grid_power_entity: sensor.grid_power         # signed net grid power      # CHANGE
   en_ev_power_entity: sensor.ev_charger_power                                  # CHANGE
   en_ev_status_entity: sensor.ev_charger_status                                # CHANGE
   en_hp_power_entity: sensor.heat_pump_power                                   # CHANGE
   en_solcast_remaining_entity: sensor.solar_forecast_remaining_today           # CHANGE (Solcast: sensor.solcast_pv_forecast_forecast_remaining_today)
   en_tesla_soc_entity: sensor.ev_battery_level                                 # CHANGE
   en_tesla_location_entity: device_tracker.ev_location                         # CHANGE
-  # Daily flow-path meters (the "Today" Sankey) — kWh utility meters, one per
-  # source→sink path. Created HA-side from
-  # homeassistant/examples/energy_daily_flows.yaml.
-  en_df_pv_to_home_entity: sensor.daily_flow_pv_to_home
-  en_df_pv_to_battery_entity: sensor.daily_flow_pv_to_battery
-  en_df_pv_to_grid_entity: sensor.daily_flow_pv_to_grid
-  en_df_battery_to_home_entity: sensor.daily_flow_battery_to_home
-  en_df_battery_to_grid_entity: sensor.daily_flow_battery_to_grid
-  en_df_grid_to_home_entity: sensor.daily_flow_grid_to_home
-  en_df_grid_to_battery_entity: sensor.daily_flow_grid_to_battery
-  en_df_pv_to_ev_entity: sensor.daily_flow_pv_to_ev
-  en_df_battery_to_ev_entity: sensor.daily_flow_battery_to_ev
-  en_df_grid_to_ev_entity: sensor.daily_flow_grid_to_ev
-  en_df_pv_to_hp_entity: sensor.daily_flow_pv_to_hp
-  en_df_battery_to_hp_entity: sensor.daily_flow_battery_to_hp
-  en_df_grid_to_hp_entity: sensor.daily_flow_grid_to_hp
+  # Energy-dashboard kWh counters for the "Today" Sankey — the same entities
+  # your HA Energy dashboard uses. The panel reads today's change from the
+  # recorder (recorder.get_statistics, HA ≥ 2025.10) and splits it into flow
+  # paths itself. EV / heat pump are optional: set "" if you have none.
+  en_pv_energy_entity: sensor.pv_energy_total                                  # CHANGE
+  en_grid_import_energy_entity: sensor.grid_import_energy_total                # CHANGE
+  en_grid_export_energy_entity: sensor.grid_export_energy_total                # CHANGE
+  en_batt_charge_energy_entity: sensor.battery_charge_energy_total             # CHANGE
+  en_batt_discharge_energy_entity: sensor.battery_discharge_energy_total       # CHANGE
+  en_ev_energy_entity: sensor.ev_charger_energy_total                          # CHANGE (optional, "" = none)
+  en_hp_energy_entity: sensor.heat_pump_energy_total                           # CHANGE (optional, "" = none)
+  # Optional measured house-load counter (e.g. your inverter's daily load /
+  # consumption energy sensor). Set "" to derive load as
+  # PV + import + discharge - export - charge, which also counts losses.
+  en_load_energy_entity: sensor.house_load_energy_total                        # CHANGE (optional, "" = derive)
 
   # ── Lights (page-lights, OPTIONAL page) ─────────────────────────────────────
   # Only consumed if the device file includes modules/page-lights.yaml. The

@@ -20,7 +20,7 @@
 # floats over the reserved strip.
 #
 # Reuses widgets/status_pill.yaml + widgets/icon_button.yaml.
-# Cross-package ids: batt_soc/batt_kw (ui-shared), pv_kw/home_kw
+# Cross-package ids: batt_soc/batt_kw (ui-shared), pv_kw/grid_kw
 # (page-energy), ha_connected (library loading.yaml), ha_time (ui-foundation),
 # energy_page/info_screen, takeover_enter (takeover.yaml), btn_ss_batt/ic_ss_batt/
 # lbl_ss_batt (page-screensaver).
@@ -60,7 +60,7 @@ script:
 
           // ── Battery: SOC% + power-flow state (glyph + colour) ──
           // State from instantaneous powers (batt_kw +chg/-dis, pv_kw solar,
-          // home_kw load); grid = residual home + batt - pv (+import/-export).
+          // grid_kw +import/-export; all normalised by page-energy filters).
           // Dead-band keeps it from flickering near 0.
           {
             char soc[8] = "--%";
@@ -71,8 +71,7 @@ script:
 
             float kw   = id(batt_kw).has_state() ? id(batt_kw).state : 0.0f;   // + charge / - discharge
             float pv   = id(pv_kw).has_state()   ? id(pv_kw).state   : 0.0f;   // solar  (>= 0)
-            float load = id(home_kw).has_state() ? id(home_kw).state : 0.0f;   // house  (>= 0)
-            float grid = load + kw - pv;                                       // + import / - export
+            float grid = id(grid_kw).has_state() ? id(grid_kw).state : 0.0f;   // + import / - export
             const float T = 0.10f;                                            // dead-band (kW)
 
             const char* gl; uint32_t col;
