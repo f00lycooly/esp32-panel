@@ -30,10 +30,16 @@ sensors — tapping it jumps here from anywhere.
 ![Energy Today page](../images/today.jpg)
 
 Swipe left for the day's *totals*: a Sankey of energy moved along each
-source→destination path since midnight, built from thirteen daily flow meters
-(PV/Battery/Grid → Home/Battery/Grid/EV/Heat-pump). The `*_to_home` meters
-count *all* load; the panel subtracts the EV and heat-pump splits to recover
-the home-remainder per source.
+source→destination path since midnight (PV/Battery/Grid →
+Home/Battery/Grid/EV/Heat-pump). The panel asks HA's recorder for today's
+change on the same kWh counters your Energy dashboard uses
+(`recorder.get_statistics`, on HA connect and every 5 minutes) and splits them
+the way HA's energy-distribution card does: PV serves the home first, any
+export or charge PV cannot cover is attributed grid→battery then
+battery→grid. Per-source and per-sink totals are exact; the EV and heat-pump
+ribbons take a share of each source in proportion to the day's home source
+mix, so that attribution is an approximation. Long-term statistics compile
+hourly, so the current hour can lag.
 
 *Reference rendering of the daily Sankey:*
 
@@ -55,7 +61,10 @@ the home-remainder per source.
 | `en_solcast_remaining_entity` | Solar forecast remaining today (kWh) | `sensor.solar_forecast_remaining_today` |
 | `en_tesla_soc_entity` | EV battery level (%) | `sensor.ev_battery_level` |
 | `en_tesla_location_entity` | EV location tracker (home/away gates the EV node) | `device_tracker.ev_location` |
-| `en_df_pv_to_home_entity` … | The thirteen daily flow meters (kWh): `pv/battery/grid` → `home/battery/grid/ev/hp` | `sensor.daily_flow_pv_to_home` |
+| `en_pv_energy_entity` | PV production counter (kWh, Energy dashboard) | `sensor.pv_energy_total` |
+| `en_grid_import_energy_entity` / `en_grid_export_energy_entity` | Grid import / export counters | `sensor.grid_import_energy_total` |
+| `en_batt_charge_energy_entity` / `en_batt_discharge_energy_entity` | Battery charge / discharge counters | `sensor.battery_charge_energy_total` |
+| `en_ev_energy_entity` / `en_hp_energy_entity` | EV charger / heat-pump counters (optional, `""` = none) | `sensor.ev_charger_energy_total` |
 
 The battery pill and battery node read the shared battery sensors declared in
 `ui-shared.yaml` — bind `battery_power_entity` (signed battery power, scaled
@@ -66,11 +75,11 @@ and signed by the same `en_power_scale` / `en_batt_sign`) and
 
 - Live node powers from your inverter/charger integrations (any brand — the
   substitutions decouple the page from specific integrations).
-- The `sensor.daily_flow_*` meters from
-  [`homeassistant/examples/energy_daily_flows.yaml`](../../homeassistant/examples/energy_daily_flows.yaml):
-  template sensors allocate instantaneous flows (PV serves load first, then
-  battery, then export; shortfall from battery, then grid), Riemann-sum
-  integrations accumulate them, and daily utility meters reset at midnight.
+- The kWh counters already configured in HA's Energy dashboard (they must have
+  long-term statistics, i.e. `state_class: total` / `total_increasing`).
+- No HA packages or template sensors. The Today view needs HA ≥ 2025.10 and
+  "Allow the device to perform Home Assistant actions" on the ESPHome
+  integration entry.
 
 ---
 [← Alarm](alarm.md) · Next: [Surf conditions →](swelligence.md) · [Back to customisation](../CUSTOMISATION.md)

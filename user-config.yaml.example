@@ -142,22 +142,17 @@ substitutions:
   en_solcast_remaining_entity: sensor.solar_forecast_remaining_today           # CHANGE (Solcast: sensor.solcast_pv_forecast_forecast_remaining_today)
   en_tesla_soc_entity: sensor.ev_battery_level                                 # CHANGE
   en_tesla_location_entity: device_tracker.ev_location                         # CHANGE
-  # Daily flow-path meters (the "Today" Sankey) — kWh utility meters, one per
-  # source→sink path. Created HA-side from
-  # homeassistant/examples/energy_daily_flows.yaml.
-  en_df_pv_to_home_entity: sensor.daily_flow_pv_to_home
-  en_df_pv_to_battery_entity: sensor.daily_flow_pv_to_battery
-  en_df_pv_to_grid_entity: sensor.daily_flow_pv_to_grid
-  en_df_battery_to_home_entity: sensor.daily_flow_battery_to_home
-  en_df_battery_to_grid_entity: sensor.daily_flow_battery_to_grid
-  en_df_grid_to_home_entity: sensor.daily_flow_grid_to_home
-  en_df_grid_to_battery_entity: sensor.daily_flow_grid_to_battery
-  en_df_pv_to_ev_entity: sensor.daily_flow_pv_to_ev
-  en_df_battery_to_ev_entity: sensor.daily_flow_battery_to_ev
-  en_df_grid_to_ev_entity: sensor.daily_flow_grid_to_ev
-  en_df_pv_to_hp_entity: sensor.daily_flow_pv_to_hp
-  en_df_battery_to_hp_entity: sensor.daily_flow_battery_to_hp
-  en_df_grid_to_hp_entity: sensor.daily_flow_grid_to_hp
+  # Energy-dashboard kWh counters for the "Today" Sankey — the same entities
+  # your HA Energy dashboard uses. The panel reads today's change from the
+  # recorder (recorder.get_statistics, HA ≥ 2025.10) and splits it into flow
+  # paths itself. EV / heat pump are optional: set "" if you have none.
+  en_pv_energy_entity: sensor.pv_energy_total                                  # CHANGE
+  en_grid_import_energy_entity: sensor.grid_import_energy_total                # CHANGE
+  en_grid_export_energy_entity: sensor.grid_export_energy_total                # CHANGE
+  en_batt_charge_energy_entity: sensor.battery_charge_energy_total             # CHANGE
+  en_batt_discharge_energy_entity: sensor.battery_discharge_energy_total       # CHANGE
+  en_ev_energy_entity: sensor.ev_charger_energy_total                          # CHANGE (optional, "" = none)
+  en_hp_energy_entity: sensor.heat_pump_energy_total                           # CHANGE (optional, "" = none)
 
   # ── Lights (page-lights, OPTIONAL page) ─────────────────────────────────────
   # Only consumed if the device file includes modules/page-lights.yaml. The
