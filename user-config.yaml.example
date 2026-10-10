@@ -154,6 +154,10 @@ substitutions:
   en_batt_discharge_energy_entity: sensor.battery_discharge_energy_total       # CHANGE
   en_ev_energy_entity: sensor.ev_charger_energy_total                          # CHANGE (optional, "" = none)
   en_hp_energy_entity: sensor.heat_pump_energy_total                           # CHANGE (optional, "" = none)
+  # Optional measured house-load counter (e.g. Sigenergy
+  # sensor.sigen_plant_daily_load_consumption). Set "" to derive load as
+  # PV + import + discharge - export - charge, which also counts losses.
+  en_load_energy_entity: sensor.house_load_energy_total                        # CHANGE (optional, "" = derive)
 
   # ── Lights (page-lights, OPTIONAL page) ─────────────────────────────────────
   # Only consumed if the device file includes modules/page-lights.yaml. The

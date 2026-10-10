@@ -562,7 +562,8 @@ script:
   # Per-bucket allocation keeps time-of-day right (e.g. overnight grid→battery
   # charging is not netted against daytime PV). Short-term statistics compile
   # every 5 min and this polls every 5 min unaligned, so totals trail live by up
-  # to ~10 min. An empty EV/HP substitution is dropped and reads as 0. Needs
+  # to ~10 min. An empty EV/HP substitution is dropped and reads as 0; an
+  # empty en_load_energy_entity derives load from the other counters. Needs
   # HA >= 2025.10 and "Allow the device to perform Home Assistant actions".
   - id: fetch_energy_today
     mode: single
@@ -574,7 +575,7 @@ script:
               {{ ['${en_pv_energy_entity}', '${en_grid_import_energy_entity}',
                   '${en_grid_export_energy_entity}', '${en_batt_charge_energy_entity}',
                   '${en_batt_discharge_energy_entity}', '${en_ev_energy_entity}',
-                  '${en_hp_energy_entity}'] | select | list }}
+                  '${en_hp_energy_entity}', '${en_load_energy_entity}'] | select | list }}
             start_time: >-
               {{ today_at('00:00:00').isoformat() }}
             period: 5minute
@@ -589,7 +590,8 @@ script:
                           'chg': '${en_batt_charge_energy_entity}',
                           'dis': '${en_batt_discharge_energy_entity}',
                           'ev': '${en_ev_energy_entity}',
-                          'hp': '${en_hp_energy_entity}'} %}
+                          'hp': '${en_hp_energy_entity}',
+                          'load': '${en_load_energy_entity}'} %}
             {# per counter: bucket start -> change, scaled to kWh #}
             {% set ns = namespace(series=[], starts=[]) %}
             {% for key, sid in ids.items() %}
@@ -612,18 +614,24 @@ script:
               {% set dis = [s.dis.get(b, 0), 0] | max %}
               {% set ev = [s.ev.get(b, 0), 0] | max %}
               {% set hp = [s.hp.get(b, 0), 0] | max %}
+              {% set m = s.load.get(b) %}
               {# Same priority as the previous instantaneous flow meters: PV
                  serves home first, then charges the battery, then exports;
                  the rest of the load comes from the battery, then the grid.
-                 PV and battery outflows sum to pv / dis by construction. #}
-              {% set load = [pv + imp + dis - exp - chg, 0] | max %}
+                 Load is the measured counter when set (and present for this
+                 bucket), else derived from the balance. PV and battery
+                 outflows sum to pv / dis by construction; grid outflows are
+                 capped at imp, so a measured load above supply is capped. #}
+              {% set load = [m, 0] | max if m is number
+                            else [pv + imp + dis - exp - chg, 0] | max %}
               {% set pvh = [pv, load] | min %}
               {% set pvb = [pv - pvh, chg] | min %}
               {% set pvg = pv - pvh - pvb %}
               {% set bh = [dis, load - pvh] | min %}
               {% set bg = dis - bh %}
-              {% set gb = chg - pvb %}
-              {% set gh = [load - pvh - bh, 0] | max %}
+              {% set gb = [chg - pvb, imp] | min %}
+              {% set gh = [load - pvh - bh, imp - gb] | min %}
+              {% set load = pvh + bh + gh %}
               {# EV / HP take a share of each home source in proportion to
                  this bucket's home source mix, capped at the load #}
               {% set c = load / (ev + hp) if ev + hp > load else 1 %}

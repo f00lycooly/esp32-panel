@@ -38,7 +38,9 @@ Home/Battery/Grid/EV/Heat-pump). The panel asks HA's recorder for today's
 meters — PV serves the home first, then charges the battery, then exports;
 the rest of the load comes from the battery, then the grid — and the EV and
 heat pump take a share of each source in proportion to that bucket's home
-mix. The bucket totals are summed, so time-of-day patterns
+mix. The load is the measured house-load counter when you set one
+(recommended, it matches the old meters best), otherwise it is derived from
+the other counters. The bucket totals are summed, so time-of-day patterns
 (e.g. overnight grid charging) are kept, and the paths land close to
 per-second flow meters. Short-term statistics compile every 5 minutes and the
 panel polls unaligned, so totals trail live readings by up to ~10 minutes.
@@ -67,6 +69,7 @@ panel polls unaligned, so totals trail live readings by up to ~10 minutes.
 | `en_grid_import_energy_entity` / `en_grid_export_energy_entity` | Grid import / export counters | `sensor.grid_import_energy_total` |
 | `en_batt_charge_energy_entity` / `en_batt_discharge_energy_entity` | Battery charge / discharge counters | `sensor.battery_charge_energy_total` |
 | `en_ev_energy_entity` / `en_hp_energy_entity` | EV charger / heat-pump counters (optional, `""` = none) | `sensor.ev_charger_energy_total` |
+| `en_load_energy_entity` | Measured house-load counter (optional; `""` derives load as PV + import + discharge − export − charge, which also counts inverter/battery losses) | `sensor.sigen_plant_daily_load_consumption` |
 
 The battery pill and battery node read the shared battery sensors declared in
 `ui-shared.yaml` — bind `battery_power_entity` (signed battery power, scaled
