@@ -49,6 +49,15 @@ project in turn credits
 and
 [BigBobbas/ESP32-S3-Box3-Custom-ESPHome](https://github.com/BigBobbas/ESP32-S3-Box3-Custom-ESPHome).
 
+### ESP-Hosted co-processor firmware
+
+`firmware/esp-hosted/network_adapter_esp32c6-2.12.12.bin` is an unmodified
+ESP32-C6 build of [espressif/esp-hosted](https://github.com/espressif/esp-hosted)
+(Apache License 2.0, Copyright Espressif Systems), as published by ESPHome at
+`https://esphome.github.io/esp-hosted-firmware/v2.12.12/network_adapter_esp32c6.bin`
+(sha256 `bad97ce81e7fcf5f3365898f633b80941ae863db9c754d87a78f89c8f61f2e94`).
+It is embedded in the panel firmware so the C6 can be updated over SDIO.
+
 ## Fonts
 
 Fonts are NOT covered by this repository's MIT licence; each is governed

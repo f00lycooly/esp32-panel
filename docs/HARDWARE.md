@@ -38,8 +38,13 @@ PSRAM, ESP-Hosted, display, touch and audio settings are taken from
 - **ESP-Hosted radio link** — the P4 talks to the onboard C6 over SDIO
   (`esp_hosted` managed component, pinned version), with enlarged RX/TX queues
   and `use_psram: true` to relieve queue exhaustion on this split P4/C6 board.
-  An `update` platform entry can flash the C6's hosted firmware from the
-  official manifest.
+  The host library is pinned to **2.12.12**, and the matching C6 firmware image
+  is embedded in the panel firmware (`firmware/esp-hosted/`), so the
+  `ESP-Hosted Firmware` update entity can bring the C6 to the same version over
+  SDIO without needing WiFi. After flashing a firmware that changes the pin,
+  press **Install** on that entity in Home Assistant; a host/C6 version
+  mismatch can wedge the WiFi link ~30 s after boot. Bump the pin, the image
+  and its `sha256` together.
 - **lwIP TCP tuning** — the panel↔C6 RPC round-trip (~65 ms) makes default TCP
   windows the throughput bottleneck (~88 KB/s), not the PHY. The module raises
   `TCP_WND`/`SND_BUF`/mailbox sizes to keep more bytes in flight — this is what

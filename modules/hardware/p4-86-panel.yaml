@@ -42,7 +42,13 @@ esp32:
   framework:
     type: esp-idf
     components:
-      - espressif/esp_hosted==2.12.1
+      # MUST match the C6 co-processor firmware (embedded below) and the
+      # esp_hosted API ESPHome's esp32_hosted component is built against —
+      # ESPHome 2026.9 calls the 3-arg esp_hosted_register_custom_callback
+      # added in 2.12.12. A host/C6 mismatch wedges the hosted WiFi link ~30 s
+      # after boot, so bump this pin, the embedded C6 image and its sha256
+      # together (see firmware/esp-hosted/).
+      - espressif/esp_hosted==2.12.12
     sdkconfig_options:
       CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM: y
       # : SDIO RX/TX queue depth to the WiFi co-processor.
@@ -132,14 +138,19 @@ esp32_hosted:
   # split P4/C6 board ( boot-loop fix; esphome esp32_hosted docs + issue #10956).
   use_psram: true
 
-# Firmware update for esp32_hosted ESP32-C6
+# Firmware update for esp32_hosted ESP32-C6. The C6 image is EMBEDDED in the
+# P4 firmware rather than fetched over WiFi: a C6 left on mismatched firmware can
+# wedge the hosted WiFi link before an HTTP update finishes downloading, so the
+# matching image must already be on the device. Install it from the HA update
+# entity; it is flashed over SDIO.
 update:
   - platform: esp32_hosted
+    id: c6_firmware
     name: ESP-Hosted Firmware
     icon: mdi:chip
-    type: http
-    source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
-    update_interval: 6h
+    type: embedded
+    path: ../../firmware/esp-hosted/network_adapter_esp32c6-2.12.12.bin
+    sha256: bad97ce81e7fcf5f3365898f633b80941ae863db9c754d87a78f89c8f61f2e94
 
 # -------------------------------------------
 # Bluetooth tracker — EXTRACTED to a gateable package.
