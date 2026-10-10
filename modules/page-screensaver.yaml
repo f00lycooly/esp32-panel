@@ -1,7 +1,6 @@
-# Per-panel weather feed: ${weather_forecast_entity} is defined in
-# user-config.yaml (see user-config.yaml.example, Weather section). The data
-# underneath is a template wrapper over weather.forecast_home — see
-# homeassistant/examples/weather_forecast.yaml.
+# Per-panel weather feed: ${weather_entity} (any HA weather.* entity) is defined
+# in user-config.yaml (see user-config.yaml.example, Weather section). The panel
+# calls weather.get_forecasts itself — no HA-side glue needed (HA >= 2025.10).
 
 # Display-capture self-registration: this page owns its
 # screenshot endpoint. Inert unless the device includes
@@ -21,10 +20,10 @@ packages:
 # flush-left Oswald clock, a hard cyan rule, tracked-out caps date, and a
 # Today/Tomorrow forecast strip with real MDI weather glyphs.
 #
-# Data: ha_time (clock/date, 1s interval); $weather_forecast_entity
-# (HA glue homeassistant/examples/weather_forecast.yaml) publishes `today` + `tomorrow` as
-# "<condition>|<hi>|<lo>" strings; apply_forecast maps the condition to a glyph +
-# pretty label and fills the cell.
+# Data: ha_time (clock/date, 1s interval); fetch_forecast calls weather.get_forecasts
+# on $weather_entity (API connect + every 30 min) and a response_template emits
+# `today` + `tomorrow` as "<condition>|<hi>|<lo>" strings; apply_forecast maps the
+# condition to a glyph + pretty label and fills the cell.
 #
 # Cross-package ids (resolve after merge): main_page (page-main), ha_time
 # (foundation), oswald_* (ui-shared).
@@ -88,6 +87,36 @@ script:
             lv_label_set_text(id(ss_date), d);
           }
 
+  # Fetch the daily forecast from HA and feed apply_forecast. The response_template
+  # reduces it to {"today": "<cond>|<hi>|<lo>", "tomorrow": "..."} (empty string if
+  # that day is missing). On error the cells simply keep their last values.
+  - id: fetch_forecast
+    then:
+      - homeassistant.action:
+          action: weather.get_forecasts
+          data:
+            type: daily
+            entity_id: $weather_entity
+          capture_response: true
+          response_template: >-
+            {% set f = response['$weather_entity'].forecast | default([]) %}
+            {% set ns = namespace(a='', b='') %}
+            {% for d in f[:2] %}
+            {% set v = d.condition ~ '|' ~ (d.temperature | round(0) | int) ~ '|' ~ (d.templow | default(d.temperature) | round(0) | int) %}
+            {% if loop.first %}{% set ns.a = v %}{% else %}{% set ns.b = v %}{% endif %}
+            {% endfor %}
+            {{ {'today': ns.a, 'tomorrow': ns.b} | tojson }}
+          on_success:
+            - lambda: |-
+                std::string today = response["response"]["today"].as<std::string>();
+                std::string tom = response["response"]["tomorrow"].as<std::string>();
+                if (!today.empty()) id(apply_forecast)->execute(0, today);
+                if (!tom.empty()) id(apply_forecast)->execute(1, tom);
+          on_error:
+            - logger.log:
+                level: WARN
+                format: "weather.get_forecasts failed; keeping last forecast"
+
   # Fill one forecast cell (0=Today, 1=Tomorrow) from a "<condition>|<hi>|<lo>"
   # string: map the HA condition to its MDI weather glyph + a short label, and set
   # the hi/lo. Unknown conditions fall back to a cloud.
@@ -131,6 +160,10 @@ script:
           lv_label_set_text(cd[cell], pretty);
 
 interval:
+  # Refresh the forecast every 30 min (first fetch is on API connect).
+  - interval: 30min
+    then:
+      - script.execute: fetch_forecast
   # Clock + date, updated every second — but only while the screensaver is
   # actually showing (on_load paints immediately when it appears).
   - interval: 1s
@@ -140,21 +173,9 @@ interval:
           then:
             - script.execute: ss_paint_clock
 
-text_sensor:
-  # Forecast feed (HA glue homeassistant/examples/weather_forecast.yaml). Each attribute is a
-  # "<condition>|<hi>|<lo>" string; apply_forecast paints the matching cell.
-  - platform: homeassistant
-    id: ss_today_src
-    entity_id: $weather_forecast_entity
-    attribute: today
-    on_value:
-      - script.execute: {id: apply_forecast, cell: 0, info: !lambda 'return x;'}
-  - platform: homeassistant
-    id: ss_tom_src
-    entity_id: $weather_forecast_entity
-    attribute: tomorrow
-    on_value:
-      - script.execute: {id: apply_forecast, cell: 1, info: !lambda 'return x;'}
+api:
+  on_client_connected:
+    - script.execute: fetch_forecast
 
 lvgl:
   pages:

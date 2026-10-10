@@ -107,7 +107,7 @@ Each page documents its own substitution table — see the
 | Hot water | `dhw_tank_temp_entity`, `dhw_setpoint_entity`, `dhw_boost_switch`, `dhw_wh_entity` | [hotwater](pages/hotwater.md) |
 | Energy | `en_pv_power_entity`, `en_consumed_power_entity`, `en_grid_import_entity`, `en_grid_export_entity`, `en_ev_power_entity`, `en_hp_power_entity`, `en_solcast_remaining_entity`, `en_ev_power_entity`, `en_ev_status_entity`, `en_tesla_soc_entity`, `en_tesla_location_entity`, thirteen `en_df_*_entity` daily-flow meters; shared `battery_power_entity` + `battery_soc_entity` (ui-shared, also feed the top-bar battery pill) | [energy](pages/energy.md) |
 | Timer | `timer_entity` | [timer](pages/timer.md) |
-| Screensaver | `weather_forecast_entity` | [screensaver](pages/screensaver.md) |
+| Screensaver | `weather_entity` | [screensaver](pages/screensaver.md) |
 | Vacuum | `vacuum_entity` + the `vacuum_*_entity` status/fault set, `vacuum_nav_f`/`_p` | [vacuum](pages/vacuum.md) |
 | Room | `room_nav_f`/`_p` (tile grid is still a stub) | [room](pages/room.md) |
 | Main | `local_room_label` — room label shown above the now-playing dock | [main](pages/main.md) |
