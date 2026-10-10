@@ -42,8 +42,8 @@ PSRAM, ESP-Hosted, display, touch and audio settings are taken from
   is embedded in the panel firmware (`firmware/esp-hosted/`), so the
   `ESP-Hosted Firmware` update entity can bring the C6 to the same version over
   SDIO without needing WiFi. A host/C6 version mismatch can wedge the WiFi
-  link ~30 s after boot, so the panel checks ~15 s after boot and, if the C6
-  differs from the embedded image, flashes it automatically (at most 3
+  link ~30 s after boot, so straight after boot (once setup has read the C6
+  version) the panel flashes the embedded image if the C6 differs (at most 3
   attempts across reboots; after that it logs an error and the entity's
   **Install** button or a USB flash is the fallback). Bump the pin, the image
   and its `sha256` together.

@@ -26,12 +26,12 @@ esphome:
   # silently fight it.
   on_boot:
     # Bring the C6 to the embedded esp_hosted version without depending on the
-    # WiFi link a mismatched C6 may wedge (~30 s after boot): flash over SDIO
-    # once the link has settled. Capped at 3 attempts across reboots.
+    # WiFi link a mismatched C6 may wedge (~30 s after boot): flash over SDIO as
+    # early as possible (the ~1.2 MB image takes tens of seconds and blocks the
+    # main loop). In embedded mode the C6 version is read once in setup(), so
+    # no update.check is needed. Capped at 3 attempts across reboots.
     - priority: -100
       then:
-        - delay: 15s
-        - update.check: c6_firmware
         - delay: 2s
         - if:
             condition:
@@ -42,6 +42,13 @@ esphome:
                     lambda: 'return id(c6_update_attempts) < 3;'
                   then:
                     - lambda: 'id(c6_update_attempts) += 1;'
+                    # Persist the count BEFORE flashing: restore_value globals
+                    # reach NVS only on their poll + the 60 s flash-write
+                    # interval, so a hang/reset mid-flash would lose it and the
+                    # cap would never trip. Let the globals poll queue the save,
+                    # then force it out.
+                    - delay: 1500ms
+                    - lambda: 'global_preferences->sync();'
                     - logger.log:
                         level: WARN
                         format: "C6 firmware differs from the embedded image; flashing (attempt %d/3)"
@@ -170,8 +177,9 @@ esp32_hosted:
 # Firmware update for esp32_hosted ESP32-C6. The C6 image is EMBEDDED in the
 # P4 firmware rather than fetched over WiFi: a C6 left on mismatched firmware can
 # wedge the hosted WiFi link before an HTTP update finishes downloading, so the
-# matching image must already be on the device. Install it from the HA update
-# entity; it is flashed over SDIO.
+# matching image must already be on the device. esphome.on_boot (above) flashes
+# it over SDIO automatically when the C6 differs; the HA update entity's Install
+# button is the manual fallback.
 update:
   - platform: esp32_hosted
     id: c6_firmware
