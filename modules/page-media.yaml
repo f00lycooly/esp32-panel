@@ -135,10 +135,13 @@ script:
             id(media_active_target) = coord_of(r);
           }
           pub(id(media_state), display_state(r, is_tv(r)));
-          pub(id(media_title), r.title);
-          pub(id(media_artist), r.artist);
+          // Cached metadata is never cleared (HA forwards deltas only), so
+          // hide it here while nothing is loaded (idle/off/unavailable).
+          bool loaded = media_loaded(r);
+          pub(id(media_title), loaded ? r.title : std::string());
+          pub(id(media_artist), loaded ? r.artist : std::string());
           pub(id(media_device_name), r.caption);
-          pub(id(np_art_url), r.art);
+          pub(id(np_art_url), loaded ? r.art : std::string());
           float v = std::isnan(r.volume) ? 0.0f : r.volume;
           if (!id(media_volume).has_state() || id(media_volume).state != v)
             id(media_volume).publish_state(v);

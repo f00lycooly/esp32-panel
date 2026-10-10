@@ -87,24 +87,20 @@ inline bool is_tv(const Room &r) {
 // (homeassistant/components/esphome/manager.py, _send_home_assistant_state_event
 // / _send_home_assistant_state): an attribute is sent only when its value
 // changed, and nothing at all when it disappears. From the panel, "removed"
-// and "unchanged" therefore look the same, so:
-//   • A new media_content_id must NOT clear title/artist/art: the next track
-//     of the same album keeps the same artist and art URL, which HA never
-//     re-sends.
-//   • State not playing/paused (idle, off, unavailable, unknown) → the hero is
-//     hidden anyway; forget title/artist/art so a later session can't show
-//     them. content_id is kept: it is only read while playing, and a TV room's
-//     htastream id is constant, so clearing it would lose TV detection when
-//     the TV comes back (HA wouldn't re-send the unchanged id).
+// and "unchanged" therefore look the same, so the cache NEVER clears a field
+// itself: a cleared value would not come back until it changed again (same
+// album → same artist/art; resume of the same track after idle; a TV room's
+// constant htastream content id). A reconnect re-subscribes, and HA sends the
+// current value of every attribute present, so the cache refreshes then.
+// Instead, readers hide the metadata while nothing is loaded: see
+// media_loaded().
 // Known limitation: if a new track lacks an artist/art the previous one had,
-// the old value stays until the room leaves playing/paused.
+// the old value is shown for that track.
 inline void set_content(Room &r, const std::string &x) { r.content_id = x; }
-inline void set_state(Room &r, const std::string &x) {
-  r.state = x;
-  if (x != "playing" && x != "paused") {
-    r.title.clear(); r.artist.clear(); r.art.clear();
-  }
-}
+inline void set_state(Room &r, const std::string &x) { r.state = x; }
+
+// Title/artist/art are only meaningful while a track is loaded.
+inline bool media_loaded(const Room &r) { return r.state == "playing" || r.state == "paused"; }
 
 // State as the panel shows it: `tv` replaces `playing` on an external input.
 inline std::string display_state(const Room &r, bool tv) {

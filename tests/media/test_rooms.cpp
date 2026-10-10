@@ -70,17 +70,18 @@ int main() {
   m.title = "Track 2";
   CHECK(m.artist == "Band" && m.art == "/api/media_player_proxy/x?cache=album" && m.title == "Track 2");
 
-  // Leaving playing/paused (idle, off, unavailable, unknown) clears metadata;
-  // content id is kept (only read while playing)
+  // The cache never clears: idle hides metadata (media_loaded false, so
+  // readers publish blanks) but resuming the same track — which HA does not
+  // re-send — shows it again
   set_state(m, "paused");
-  CHECK(m.title == "Track 2");
-  set_state(m, "idle");
-  CHECK(m.title.empty() && m.artist.empty() && m.art.empty());
-  for (const char *st : {"off", "unavailable", "unknown"}) {
-    m.title = "T"; m.art = "/api/x";
+  CHECK(media_loaded(m));
+  for (const char *st : {"idle", "off", "unavailable", "unknown"}) {
     set_state(m, st);
-    CHECK(m.title.empty() && m.art.empty());
+    CHECK(!media_loaded(m));
+    CHECK(m.title == "Track 2" && m.artist == "Band" && !m.art.empty());
   }
+  set_state(m, "playing");
+  CHECK(media_loaded(m) && m.title == "Track 2" && m.art == "/api/media_player_proxy/x?cache=album");
 
   // TV room going idle and back: the constant htastream id (not re-sent by
   // HA) still marks it tv
