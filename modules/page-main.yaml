@@ -888,9 +888,10 @@ lvgl:
             text_color: gray500
 
         # ───────────── FOLLOW ME toggle ( 4d) ─────────────
-        # Global mode (input_boolean.sonos_follow_me): OFF = music stays where
-        # started; ON = the stream follows you room→room (NR flow). Tap toggles HA;
-        # follow_me_state (binary_sensor) repaints the pill. Inner obj centres the
+        # Global mode (local ESPHome switch follow_me, exposed to HA as
+        # switch.<panel>_follow_me): OFF = music stays where started; ON = the
+        # stream follows you room→room (external automation reads the switch).
+        # Tap toggles the local switch; its on_state repaints the pill. Inner obj centres the
         # row (flex-on-button is unreliable — centre via an auto-sized child).
         - button:
             id: btn_follow_me
@@ -919,15 +920,16 @@ lvgl:
                     - label: {id: fm_label,  clickable: false, text: "Follow Me", text_font: oswald_24, text_color: white}
                     - label: {id: fm_status, clickable: false, text: "OFF", text_font: oswald_20, text_color: gray500}
             on_click:
-              - homeassistant.action:
-                  action: input_boolean.toggle
-                  data: {entity_id: input_boolean.sonos_follow_me}
+              - switch.toggle: follow_me_state
 
-# ───── Follow Me state mirror ( 4d): repaint the pill from HA ─────
-binary_sensor:
-  - platform: homeassistant
+# ───── Follow Me switch ( 4d): local state, repaints the pill, visible to HA ─────
+switch:
+  - platform: template
+    name: "Follow me"
     id: follow_me_state
-    entity_id: input_boolean.sonos_follow_me
+    icon: mdi:walk
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
     on_state:
       - lambda: |-
           bool on = x;
