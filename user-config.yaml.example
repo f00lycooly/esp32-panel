@@ -38,12 +38,7 @@ substitutions:
   # gracefully when fetches fail, or run the proxy container — recommended.
   imageproxy_url: "http://homeassistant.local:8088"
 
-  # ── Media: mirror + Spotify feeds ───────────────────────────────────────────
-  # Per-panel "what's playing here" mirror sensor + selection helper. Create
-  # them in HA from homeassistant/examples/media_mirror.yaml (template sensor
-  # following the active player) and an input_text helper for the selection.
-  media_mirror_entity: sensor.panel_active_media          # CHANGE
-  active_player_helper: input_text.panel_active_player    # CHANGE
+  # ── Media: Spotify feeds ────────────────────────────────────────────────────
   # Spotify content feeds (recent / playlists / artists) read by the media
   # pages and the alarm music-picker. Provided by the template package in
   # homeassistant/examples/spotify_panel.yaml (requires the HA Spotify

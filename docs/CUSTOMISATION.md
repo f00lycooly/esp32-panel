@@ -36,10 +36,12 @@ groups. Values shown are the shipped examples, which match the
 
 ### Media binding (per panel)
 
+Now-playing binds each roster room's `media_player.<slug>` directly (see
+*Speaker room roster* below); the selected room is kept on the panel and
+survives reboots. No HA mirror sensor or selection helper is needed.
+
 | Substitution | What it does | Consumed by |
 |---|---|---|
-| `media_mirror_entity` | The panel's active-media mirror sensor (from `media_mirror.yaml`) — one stable entity id reflecting whichever player is targeted | [main](pages/main.md), now-playing dock |
-| `active_player_helper` | The `input_text` helper naming the active player; the panel writes it when you retarget | main, media |
 | `external_media_player` | Room slug seeding the *voice* target speaker on first boot (runtime-editable from HA afterwards) | voice stack |
 
 ### Spotify content feeds
@@ -143,8 +145,7 @@ The pattern:
 1. Copy `waveshare-p4-86-panel.yaml` to `<room>-panel.yaml`.
 2. Override the **identity** group (`name`, `friendly_name`, …).
 3. Override the **rosters** (`media_local_slug`, alarm rows, per-page entities
-   like `timer_entity` — each panel gets its own HA timer helper and
-   active-media mirror package).
+   like `timer_entity` — each panel gets its own HA timer helper).
 4. Trim the `packages:` list and the **nav contract** to the functions this
    panel needs. Unincluded pages cost nothing; pages left out of the swipe
    matrix can still be reached by chrome (e.g. Energy via the top-bar battery

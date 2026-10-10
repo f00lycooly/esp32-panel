@@ -4,13 +4,30 @@
 #
 # Owns: the media_page LVGL page (transport card + 3×3 device-selector grid),
 # the active_media_player global, the refresh_device_sel highlight script, the
-# media_volume sensor, and the four active-media text_sensors
-# (state / title / device_name / active-player sync mirror).
+# 7 per-room media_player bindings (media-room.yaml + media-rooms.h cache), and
+# the now-playing sensors derived from the selected room (media_state / title /
+# artist / device_name / media_volume) by media_select_sync.
 #
 # Cross-package IDs (resolved at package merge): nav_tile/card/header_title/
 # page_style styles, ep_blue/very_dark_gray/gray500 colours, nunito_*/mdi_*
 # fonts and glyph substitutions (library packages), main_page (page-main).
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Per-room media_player bindings: one package per compile-time slot. Each binds
+# media_player.${media_room_N_slug} directly and caches into media_rooms::rooms()
+# (media-rooms.h), replacing the old per-panel HA mirror sensor + input_text.
+esphome:
+  includes:
+    - modules/media-rooms.h
+
+packages:
+  media_room_0: !include {file: media-room.yaml, vars: {idx: 0, slug: "${media_room_0_slug}", caption: "${media_room_0_caption}"}}
+  media_room_1: !include {file: media-room.yaml, vars: {idx: 1, slug: "${media_room_1_slug}", caption: "${media_room_1_caption}"}}
+  media_room_2: !include {file: media-room.yaml, vars: {idx: 2, slug: "${media_room_2_slug}", caption: "${media_room_2_caption}"}}
+  media_room_3: !include {file: media-room.yaml, vars: {idx: 3, slug: "${media_room_3_slug}", caption: "${media_room_3_caption}"}}
+  media_room_4: !include {file: media-room.yaml, vars: {idx: 4, slug: "${media_room_4_slug}", caption: "${media_room_4_caption}"}}
+  media_room_5: !include {file: media-room.yaml, vars: {idx: 5, slug: "${media_room_5_slug}", caption: "${media_room_5_caption}"}}
+  media_room_6: !include {file: media-room.yaml, vars: {idx: 6, slug: "${media_room_6_slug}", caption: "${media_room_6_caption}"}}
 
 font:
   # ─── Page-local glyphs for the Pick Music + Browse takeovers (.3/.4) ───
@@ -41,6 +58,53 @@ font:
       - $mdi_compass
 
 script:
+  # ═══════ Per-room cache → now-playing (replaces the HA mirror) ═══════
+  # Every per-room on_value (media-room.yaml) runs this. mode: restart + a short
+  # delay coalesces the burst HA sends on connect / on a group change into one
+  # recompute.
+  - id: media_rooms_changed
+    mode: restart
+    then:
+      - delay: 100ms
+      - script.execute: media_select_sync
+
+  # Re-derive everything that follows the SELECTED room (active_media_player)
+  # from the per-room cache. Runs on any room change and wherever the selection
+  # changes (stage_toggle, prestage, Group, gc_tap, adopt_playing_group).
+  #   • media_active_target = group_members[0] of the selected room (Sonos plays
+  #     on the coordinator; a grouped member silently no-ops), else the room.
+  #   • media_state / media_title / media_artist / media_device_name /
+  #     media_volume / np_art_url (page-main) are published only on change, so
+  #     the art fetch doesn't re-fire on unrelated updates.
+  # A selection outside the 7 slots (an adopted coordinator that isn't
+  # configured) resolves through the first configured room grouped under it.
+  - id: media_select_sync
+    then:
+      - lambda: |-
+          using namespace media_rooms;
+          int i = resolve_room(id(active_media_player));
+          auto pub = [](text_sensor::TextSensor *t, const std::string &v) {
+            if (!t->has_state() || t->state != v) t->publish_state(v);
+          };
+          if (i < 0) {
+            pub(id(media_state), "unknown");
+            pub(id(media_title), "");
+            pub(id(media_artist), "");
+            pub(id(media_device_name), "");
+            pub(id(np_art_url), "");
+            return;
+          }
+          const Room &r = rooms()[i];
+          id(media_active_target) = coord_of(r);
+          pub(id(media_state), display_state(r, is_tv(r)));
+          pub(id(media_title), r.title);
+          pub(id(media_artist), r.artist);
+          pub(id(media_device_name), r.caption);
+          pub(id(np_art_url), r.art);
+          float v = std::isnan(r.volume) ? 0.0f : r.volume;
+          if (!id(media_volume).has_state() || id(media_volume).state != v)
+            id(media_volume).publish_state(v);
+
   # Rooms modal: paint each tile from the
   # staged-selection vector with a NO-LEGEND visual: coordinator (index 0) = SOLID
   # ep_blue + dark caption; other staged = faint tint + ep_blue OUTLINE; unstaged =
@@ -167,11 +231,12 @@ script:
             add(tslug);                                       // standalone active room
           }
           if (!v.empty()) { id(active_media_player) = v.front(); id(media_active_target) = v.front(); }
+      - script.execute: media_select_sync
       - script.execute: refresh_device_sel
 
   # Rooms modal: toggle a room in the staged vector. If it
-  # becomes/loses the front (coordinator), sync active_media_player + the HA mirror
-  # so transport/now-playing follow the coordinator. Then repaint the grid.
+  # becomes/loses the front (coordinator), sync active_media_player and re-derive
+  # now-playing so transport/now-playing follow the coordinator. Then repaint.
   - id: stage_toggle
     parameters:
       player: string
@@ -186,23 +251,17 @@ script:
           id(last_manual_ms) = millis();   // .7: explicit pick → hold auto-follow
           if (!v.empty()) {
             id(active_media_player) = v.front();
-            // .5: target the new coordinator IMMEDIATELY so a play right after
-            // re-staging hits the right room; the `target` mirror (media_target_sync)
-            // remains authoritative and overrides once HA resolves the group.
+            // .5: target the new front IMMEDIATELY so a play right after
+            // re-staging hits the right room; media_select_sync then resolves it
+            // to that room's live coordinator (group_members[0]).
             id(media_active_target) = v.front();
           }
-      # Mirror only when something is still staged — de-staging the last room
-      # must not re-persist the stale active_media_player to HA.
+      # Re-derive only when something is still staged — de-staging the last room
+      # leaves the previous selection in place.
       - if:
           condition: {lambda: 'return !id(staged_players).empty();'}
           then:
-            - homeassistant.action:
-                action: input_text.set_value
-                data_template:
-                  entity_id: ${active_player_helper}
-                  value: "{{ tgt }}"
-                variables:
-                  tgt: 'return id(active_media_player);'
+            - script.execute: media_select_sync
       - script.execute: refresh_device_sel
 
   # Rooms modal: read a tile's live HA
@@ -245,11 +304,11 @@ script:
           }
 
   # ═══════  — auto-follow the actively-playing group ═══════
-  # The panel binds now-playing to one mirror (${media_mirror_entity} → whatever
-  # ${active_player_helper} names). Nothing repoints it when a DIFFERENT group starts
-  # playing, so it clings to the last-selected (now paused) room. This script, run on
-  # the 1s interval (page-main), ADOPTS the single actively-playing group when the
-  # current target is NOT playing — repointing the helper so the hero/art/chip follow.
+  # Now-playing follows the selected room (active_media_player). Nothing repoints it
+  # when a DIFFERENT group starts playing, so it would cling to the last-selected (now
+  # paused) room. This script, run on the 1s interval (page-main), ADOPTS the single
+  # actively-playing group when the current target is NOT playing — repointing the
+  # selection so the hero/art/chip follow.
   #   • sonos_g[] holds ONLY playing groups (template excludes paused), so a non-empty
   #     slot == a playing group; exactly one non-empty slot == unambiguous, adopt it.
   #   • Never yanks a target that is itself playing (don't interrupt mid-listen), and
@@ -289,13 +348,7 @@ script:
             - lambda: |-
                 id(active_media_player) = id(adopt_target);
                 id(media_active_target) = id(adopt_target);
-            - homeassistant.action:
-                action: input_text.set_value
-                data_template:
-                  entity_id: ${active_player_helper}
-                  value: "{{ tgt }}"
-                variables:
-                  tgt: 'return id(adopt_target);'
+            - script.execute: media_select_sync
             - logger.log:
                 format: "adopt_playing_group: following %s"
                 args: ['id(adopt_target).c_str()']
@@ -306,7 +359,7 @@ script:
   # is exactly one place that decides the target and one place that calls play_media.
   # Sonos resolves spotify: URIs locally (the Connect API can't target Sonos), so
   # spotify:playlist:/album:/artist:/track: all work with content_type=music. No-op
-  # on an empty uri/target (guards the "nothing selected / mirror not loaded" cases).
+  # on an empty uri/target (guards the "nothing selected / room data not loaded" cases).
   - id: media_play_uri
     parameters:
       uri: string
@@ -446,10 +499,10 @@ script:
       - lvgl.widget.hide: sources_modal
 
 globals:
-  # media_page: entity_id of the media_player the primary
-  # card currently targets. Set on device-tile tap (also mirrored to HA via
-  # ${active_player_helper}); read by the transport/volume actions.
-  # Kept in sync from the input_text mirror so external changes + reboot restore.
+  # media_page: entity_id of the media_player the panel currently follows (the
+  # selected room). Set by the Rooms modal, gc_tap and adopt_playing_group;
+  # media_select_sync derives now-playing + media_active_target from it.
+  # restore_value keeps the selection across reboots (panel-local, not an HA entity).
   - id: active_media_player
     type: std::string
     restore_value: true
@@ -563,13 +616,12 @@ globals:
   # ═══════  — single active-room resolver (THE FIX) ═══════
   # media_active_target is the ONE entity_id that ALL playback targets. It is the
   # resolved group COORDINATOR (Sonos plays on the coordinator; targeting a grouped
-  # member silently no-ops — the old bug). Kept current by media_target_sync below,
-  # which mirrors ${media_mirror_entity}'s `target` attribute (HA resolves
-  # the staged selection → coordinator there). Falls back to active_media_player
-  # (the staged front) when the mirror hasn't published yet, so a fresh boot still
-  # has a sane target. EVERY play path (playlist tiles, Pick Music covers, Browse
-  # tracks/artists) routes through media_play_uri(uri) → this target. restore_value
-  # so the last good coordinator survives a reboot before the mirror refreshes.
+  # member silently no-ops — the old bug). Kept current by media_select_sync, which
+  # sets it to group_members[0] of the selected room (or the room itself when it is
+  # ungrouped / group_members hasn't arrived). EVERY play path (playlist tiles, Pick
+  # Music covers, Browse tracks/artists) routes through media_play_uri(uri) → this
+  # target. restore_value so the last good coordinator survives a reboot before
+  # HA's first push.
   - id: media_active_target
     type: std::string
     restore_value: true
@@ -656,69 +708,38 @@ interval:
             }
           }
 sensor:
-  # ───── Media primary volume (backend mirror — follows selected player) ─────
+  # ───── Media primary volume (follows the selected room) ─────
   # Backend data object only (contract §5): page-main owns the now-playing volume
-  # UI (np_vol) and drives it from the active player, so this exposes the value as
-  # a sensor without painting any page-media widget (the old hero slider is gone).
-  - platform: homeassistant
+  # UI (np_vol) and reads this .state (0..1). Published by media_select_sync from
+  # the selected room's volume_level.
+  - platform: template
     id: media_volume
-    entity_id: ${media_mirror_entity}
-    attribute: volume
+    internal: true
+    update_interval: never
 
 text_sensor:
-  # Now-playing backend mirrors (contract §5): page-main's np_refresh READS these
-  # via .state (state-owned-by-page convention) to paint its hero. They are pure
-  # data objects here — page-media no longer owns any now-playing widget, so they
-  # carry no on_value (the old hero labels/art moved to page-main as np_*).
-  #   media_state → play/pause + idle/playing switch
-  #   media_title → track title;  media_device_name → source room caption
+  # Now-playing backend sensors (contract §5): page-main's np_refresh READS these
+  # via .state (state-owned-by-page convention) to paint its hero. Published by
+  # media_select_sync from the per-room cache for the selected room:
+  #   media_state → play/pause + idle/playing switch (`tv` on an external input)
+  #   media_title → track title;  media_device_name → room caption
   #   media_artist → artist line
-  - platform: homeassistant
+  - platform: template
     id: media_state
-    entity_id: ${media_mirror_entity}
-  - platform: homeassistant
+    internal: true
+    update_interval: never
+  - platform: template
     id: media_title
-    entity_id: ${media_mirror_entity}
-    attribute: title
-  - platform: homeassistant
+    internal: true
+    update_interval: never
+  - platform: template
     id: media_device_name
-    entity_id: ${media_mirror_entity}
-    attribute: device_name
-  - platform: homeassistant
+    internal: true
+    update_interval: never
+  - platform: template
     id: media_artist
-    entity_id: ${media_mirror_entity}
-    attribute: artist
-  # Active-player selection mirror: keeps the ESPHome global in sync with HA
-  # (covers external changes + reboot restore) and refreshes the tile highlight.
-  - platform: homeassistant
-    id: active_player_sync
-    entity_id: ${active_player_helper}
-    on_value:
-      - lambda: 'if (!x.empty() && x != "unknown") id(active_media_player) = x;'
-      - script.execute: refresh_device_sel
-      # Keep the resolver target sane even before the topology mirror publishes:
-      # if media_active_target is still the boot default and a real selection
-      # arrives, adopt it (the `target` mirror below overrides once it loads).
-      - lambda: |-
-          // (.empty() could never be true — the global boots to the local-room
-          // default via restore_value/initial_value, so compare against that.)
-          if (!x.empty() && x != "unknown"
-              && id(media_active_target) == "media_player.${media_local_slug}")
-            id(media_active_target) = x;
-  # ═══════  — active-target resolver mirror ═══════
-  # ${media_mirror_entity} exposes a `target` attribute = the entity_id HA
-  # resolved for playback (the group COORDINATOR for the staged room/group). This
-  # is the authoritative source for media_active_target; media_play_uri + the npd_*
-  # transport scripts read it. Empty/unknown is ignored so a transient blank never
-  # wipes a good target.
-  - platform: homeassistant
-    id: media_target_sync
-    entity_id: ${media_mirror_entity}
-    attribute: target
-    on_value:
-      - lambda: |-
-          if (!x.empty() && x != "unknown" && x != "unavailable")
-            id(media_active_target) = x;
+    internal: true
+    update_interval: never
   # Live per-room status (Rooms modal + multiroom rows). ONE text_sensor reads the
   # combined `rooms` attribute off sensor.sonos_topology — "slug|state|isCoord|size|vol;…"
   # for every discovered Sonos (sorted by slug, fully dynamic) — and fans it out to
@@ -1685,7 +1706,9 @@ lvgl:
                                     group_members: "{{ members.split(',') }}"
                         # Re-point the control target at the resulting coordinator (staged
                         # front) so the cover-art room selector + transport can't diverge
-                        # to a silenced room. Persist via the helper; the mirror repaints.
+                        # to a silenced room. active_media_player is restored across
+                        # reboots; media_select_sync repaints now-playing and re-resolves
+                        # the target once HA reports the new group_members.
                         - if:
                             condition:
                               lambda: 'return !id(staged_players).empty();'
@@ -1693,13 +1716,7 @@ lvgl:
                               - lambda: |-
                                   id(active_media_player) = id(staged_players).front();
                                   id(media_active_target) = id(staged_players).front();
-                              - homeassistant.action:
-                                  action: input_text.set_value
-                                  data_template:
-                                    entity_id: ${active_player_helper}
-                                    value: "{{ tgt }}"
-                                  variables:
-                                    tgt: 'return id(active_media_player);'
+                              - script.execute: media_select_sync
                   - button:
                       id: btn_ungroup
                       width: 296
