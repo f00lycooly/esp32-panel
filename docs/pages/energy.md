@@ -38,8 +38,8 @@ the way HA's energy-distribution card does: PV serves the home first, any
 export or charge PV cannot cover is attributed grid→battery then
 battery→grid. Per-source and per-sink totals are exact; the EV and heat-pump
 ribbons take a share of each source in proportion to the day's home source
-mix, so that attribution is an approximation. Long-term statistics compile
-hourly, so the current hour can lag.
+mix, so that attribution is an approximation. Totals come from HA's
+5-minute statistics, so they trail live readings by up to ~5 minutes.
 
 *Reference rendering of the daily Sankey:*
 

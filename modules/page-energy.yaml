@@ -552,12 +552,13 @@ script:
 
   # ════════════════ "Today" day totals (recorder statistics) ════════════════
   # Asks HA for today's change on the Energy-dashboard kWh counters (one
-  # recorder.get_statistics call, period day from local midnight) and splits
-  # them into the Sankey's flow paths on the panel, the way HA's energy-
-  # distribution card does. Per-source / per-sink totals are exact; the
+  # recorder.get_statistics call, 5-minute changes from local midnight summed
+  # HA-side) and splits them into the Sankey's flow paths on the panel, the way
+  # HA's energy-distribution card does. Per-source / per-sink totals are exact; the
   # source→EV/HP attribution is a proportional share of the day's home source
   # mix (the instant-by-instant split is not recoverable from day totals).
-  # Long-term statistics compile hourly, so the current hour may lag. An empty
+  # 5-minute short-term statistics keep the totals within ~5 min of live (hourly
+  # long-term stats lagged up to an hour); the panel still gets 7 numbers. An empty
   # EV/HP substitution is dropped from the query and reads as 0. Needs
   # HA >= 2025.10 and "Allow the device to perform Home Assistant actions".
   - id: fetch_energy_today
@@ -573,7 +574,7 @@ script:
                   '${en_hp_energy_entity}'] | select | list }}
             start_time: >-
               {{ today_at('00:00:00').isoformat() }}
-            period: day
+            period: 5minute
             types: >-
               {{ ['change'] }}
           capture_response: true
@@ -641,7 +642,7 @@ script:
       - script.execute: fetch_energy_today
 
 interval:
-  # Day totals move slowly (statistics compile hourly): refresh every 5 min.
+  # Short-term statistics compile every 5 min: refresh at the same cadence.
   - interval: 5min
     then:
       - if:
