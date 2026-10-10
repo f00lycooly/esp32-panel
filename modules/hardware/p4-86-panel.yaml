@@ -87,6 +87,15 @@ esp32:
       - espressif/esp_hosted==2.12.12
     sdkconfig_options:
       CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM: y
+      # Let plain malloc/new spill large blocks to PSRAM (ESPHome's psram
+      # component defaults to CAPS_ALLOC = internal-only malloc). Without it the
+      # ~17 KB JPEGDEC inside online_image's decoder (make_unique) needs one
+      # contiguous internal block and bad_alloc-aborts once internal RAM is
+      # fragmented (largest free block measured 13 KB on 2026-10-10).
+      CONFIG_SPIRAM_USE_CAPS_ALLOC: n
+      CONFIG_SPIRAM_USE_MALLOC: y
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "4096"
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "49152"
       # : SDIO RX/TX queue depth to the WiFi co-processor.
       # Default is 20 buffers. Bursts of online_image cover-art downloads
       # (8 Pick + 8 Browse covers fire together when sensor.spotify_panel_*
