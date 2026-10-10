@@ -24,6 +24,42 @@ esphome:
   # No `project:` here — ui-foundation.yaml stamps ${project_name}/${project_version}
   # (per-panel identity); a second project block in the package merge would
   # silently fight it.
+  on_boot:
+    # Bring the C6 to the embedded esp_hosted version without depending on the
+    # WiFi link a mismatched C6 may wedge (~30 s after boot): flash over SDIO as
+    # early as possible (the ~1.2 MB image takes tens of seconds and blocks the
+    # main loop). In embedded mode the C6 version is read once in setup(), so
+    # no update.check is needed. Capped at 3 attempts across reboots.
+    - priority: -100
+      then:
+        - delay: 2s
+        - if:
+            condition:
+              update.is_available: c6_firmware
+            then:
+              - if:
+                  condition:
+                    lambda: 'return id(c6_update_attempts) < 3;'
+                  then:
+                    - lambda: 'id(c6_update_attempts) += 1;'
+                    # Persist the count BEFORE flashing: restore_value globals
+                    # reach NVS only on their poll + the 60 s flash-write
+                    # interval, so a hang/reset mid-flash would lose it and the
+                    # cap would never trip. Let the globals poll queue the save,
+                    # then force it out.
+                    - delay: 1500ms
+                    - lambda: 'global_preferences->sync();'
+                    - logger.log:
+                        level: WARN
+                        format: "C6 firmware differs from the embedded image; flashing (attempt %d/3)"
+                        args: ['id(c6_update_attempts)']
+                    - update.perform: c6_firmware
+                  else:
+                    - logger.log:
+                        level: ERROR
+                        format: "C6 firmware still mismatched after 3 attempts; install it manually"
+            else:
+              - lambda: 'id(c6_update_attempts) = 0;'
 
 esp32:
   board: esp32-p4-evboard
@@ -42,7 +78,13 @@ esp32:
   framework:
     type: esp-idf
     components:
-      - espressif/esp_hosted==2.12.1
+      # MUST match the C6 co-processor firmware (embedded below) and the
+      # esp_hosted API ESPHome's esp32_hosted component is built against —
+      # ESPHome 2026.9 calls the 3-arg esp_hosted_register_custom_callback
+      # added in 2.12.12. A host/C6 mismatch wedges the hosted WiFi link ~30 s
+      # after boot, so bump this pin, the embedded C6 image and its sha256
+      # together (see firmware/esp-hosted/).
+      - espressif/esp_hosted==2.12.12
     sdkconfig_options:
       CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM: y
       # : SDIO RX/TX queue depth to the WiFi co-processor.
@@ -132,14 +174,28 @@ esp32_hosted:
   # split P4/C6 board ( boot-loop fix; esphome esp32_hosted docs + issue #10956).
   use_psram: true
 
-# Firmware update for esp32_hosted ESP32-C6
+# Firmware update for esp32_hosted ESP32-C6. The C6 image is EMBEDDED in the
+# P4 firmware rather than fetched over WiFi: a C6 left on mismatched firmware can
+# wedge the hosted WiFi link before an HTTP update finishes downloading, so the
+# matching image must already be on the device. esphome.on_boot (above) flashes
+# it over SDIO automatically when the C6 differs; the HA update entity's Install
+# button is the manual fallback.
 update:
   - platform: esp32_hosted
+    id: c6_firmware
     name: ESP-Hosted Firmware
     icon: mdi:chip
-    type: http
-    source: https://esphome.github.io/esp-hosted-firmware/manifest/esp32c6.json
-    update_interval: 6h
+    type: embedded
+    path: ../../firmware/esp-hosted/network_adapter_esp32c6-2.12.12.bin
+    sha256: bad97ce81e7fcf5f3365898f633b80941ae863db9c754d87a78f89c8f61f2e94
+
+globals:
+  # Auto-flash attempts for a C6 that doesn't match the embedded image; capped
+  # so a failing flash can't repeat on every boot. Reset once versions match.
+  - id: c6_update_attempts
+    type: int
+    restore_value: true
+    initial_value: "0"
 
 # -------------------------------------------
 # Bluetooth tracker — EXTRACTED to a gateable package.
