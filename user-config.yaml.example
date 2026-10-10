@@ -123,8 +123,8 @@ substitutions:
   #   en_batt_sign    "1" if battery power is +charge / -discharge, "-1" if the
   #                   integration signs it the other way round
   #   en_grid_sign    "1" if grid power is +import / -export, "-1" if it is
-  #                   +export / -import (e.g. Sigenergy's *_w grid power variants;
-  #                   the native sensor.sigen_plant_grid_active_power is +import)
+  #                   +export / -import (some inverter integrations ship both
+  #                   conventions, e.g. a W-unit variant signed the other way)
   en_power_scale: "1"                                                          # CHANGE
   en_batt_sign: "1"                                                            # CHANGE
   en_grid_sign: "1"                                                            # CHANGE
@@ -154,8 +154,8 @@ substitutions:
   en_batt_discharge_energy_entity: sensor.battery_discharge_energy_total       # CHANGE
   en_ev_energy_entity: sensor.ev_charger_energy_total                          # CHANGE (optional, "" = none)
   en_hp_energy_entity: sensor.heat_pump_energy_total                           # CHANGE (optional, "" = none)
-  # Optional measured house-load counter (e.g. Sigenergy
-  # sensor.sigen_plant_daily_load_consumption). Set "" to derive load as
+  # Optional measured house-load counter (e.g. your inverter's daily load /
+  # consumption energy sensor). Set "" to derive load as
   # PV + import + discharge - export - charge, which also counts losses.
   en_load_energy_entity: sensor.house_load_energy_total                        # CHANGE (optional, "" = derive)
 
