@@ -108,14 +108,29 @@ script:
             {{ {'today': ns.a, 'tomorrow': ns.b} | tojson }}
           on_success:
             - lambda: |-
-                std::string today = response["response"]["today"].as<std::string>();
-                std::string tom = response["response"]["tomorrow"].as<std::string>();
-                if (!today.empty()) id(apply_forecast)->execute(0, today);
-                if (!tom.empty()) id(apply_forecast)->execute(1, tom);
+                auto r = response["response"];
+                if (r["today"].is<const char*>()) {
+                  std::string today = r["today"].as<std::string>();
+                  if (!today.empty()) id(apply_forecast)->execute(0, today);
+                }
+                if (r["tomorrow"].is<const char*>()) {
+                  std::string tom = r["tomorrow"].as<std::string>();
+                  if (!tom.empty()) id(apply_forecast)->execute(1, tom);
+                }
           on_error:
             - logger.log:
                 level: WARN
-                format: "weather.get_forecasts failed; keeping last forecast"
+                format: "weather.get_forecasts failed; keeping last forecast, retrying in 60s"
+            - script.execute: fetch_forecast_retry
+
+  # One retry a minute after a failed fetch (e.g. HA just restarted and the
+  # weather integration isn't loaded yet), so the cells don't stay blank until
+  # the next 30-min refresh. mode: single — repeated failures don't stack.
+  - id: fetch_forecast_retry
+    mode: single
+    then:
+      - delay: 60s
+      - script.execute: fetch_forecast
 
   # Fill one forecast cell (0=Today, 1=Tomorrow) from a "<condition>|<hi>|<lo>"
   # string: map the HA condition to its MDI weather glyph + a short label, and set
