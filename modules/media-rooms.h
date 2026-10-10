@@ -28,7 +28,7 @@ struct Room {
   std::string caption;               // panel caption (set at boot)
   std::string state;                 // raw HA state: playing/paused/idle/...
   std::string title, artist, art;    // media_title / media_artist / entity_picture
-  std::string source, content_id;    // source / media_content_id (TV detection)
+  std::string content_id;            // media_content_id (TV / line-in detection)
   std::vector<std::string> members;  // parsed group_members, coordinator first
   float volume = NAN;                // volume_level 0..1, NaN = unknown
 };
@@ -72,14 +72,33 @@ inline std::string coord_of(const Room &r) {
   return r.members.empty() ? entity_of(r) : r.members[0];
 }
 
-// External input (TV / line-in / Sonos home-theatre stream). A room in that
+// External input: Sonos home-theatre stream (TV) or line-in. A room in that
 // state reports `tv` instead of `playing` so now-playing and auto-follow
-// ignore TV audio.
+// ignore TV audio. Judged on media_content_id alone: Sonos drops the `source`
+// attribute while streaming, and HA never pushes an attribute's removal, so a
+// cached `source: TV` would stick after switching back to music. Every Sonos
+// room always reports media_content_id, so it is always current.
 inline bool is_tv(const Room &r) {
-  std::string src;
-  for (char c : r.source) src += (char) std::tolower((unsigned char) c);
-  return src == "tv" || src == "line-in" || src == "line in" ||
-         r.content_id.rfind("x-sonos-htastream", 0) == 0;
+  return r.content_id.rfind("x-sonos-htastream", 0) == 0 ||
+         r.content_id.rfind("x-rincon-stream:", 0) == 0;
+}
+
+// Cache updates that drop stale metadata. HA never pushes an attribute's
+// removal (the TV input has no entity_picture, for example), so the old
+// track's title/artist/art would otherwise linger.
+//   • New media_content_id → the track changed; forget the old metadata (the
+//     new title/artist/art follow in the same push).
+//   • State not playing/paused (idle, off, unavailable, ...) → nothing is
+//     loaded; forget the metadata and content id.
+inline void set_content(Room &r, const std::string &x) {
+  if (x != r.content_id) { r.title.clear(); r.artist.clear(); r.art.clear(); }
+  r.content_id = x;
+}
+inline void set_state(Room &r, const std::string &x) {
+  r.state = x;
+  if (x != "playing" && x != "paused") {
+    r.title.clear(); r.artist.clear(); r.art.clear(); r.content_id.clear();
+  }
 }
 
 // State as the panel shows it: `tv` replaces `playing` on an external input.

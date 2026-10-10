@@ -81,12 +81,16 @@ script:
     then:
       - lambda: |-
           using namespace media_rooms;
+          static std::string last_info[kRooms];   // skip unchanged tile repaints
           for (int i = 0; i < kRooms; i++) {
             if (rooms()[i].state.empty()) continue;
             RoomStatus s = room_status(i);
             id(room_state)[i] = s.state;
             id(room_vol)[i] = s.vol;
-            id(apply_room_status)->execute(i, s.info());
+            std::string info = s.info();
+            if (info == last_info[i]) continue;
+            last_info[i] = info;
+            id(apply_room_status)->execute(i, info);
           }
           std::vector<std::string> gs = playing_groups();
           for (int i = 0; i < 4; i++) id(sonos_g)[i] = i < (int) gs.size() ? gs[i] : std::string();
@@ -97,6 +101,7 @@ script:
   # changes (stage_toggle, prestage, Group, gc_tap, adopt_playing_group).
   #   • media_active_target = group_members[0] of the selected room (Sonos plays
   #     on the coordinator; a grouped member silently no-ops), else the room.
+  #     Not overridden for ~3 s after a Group action (group_pending_until_ms).
   #   • media_state / media_title / media_artist / media_device_name /
   #     media_volume / np_art_url (page-main) are published only on change, so
   #     the art fetch doesn't re-fire on unrelated updates.
@@ -116,10 +121,19 @@ script:
             pub(id(media_artist), "");
             pub(id(media_device_name), "");
             pub(id(np_art_url), "");
+            if (!id(media_volume).has_state() || id(media_volume).state != 0.0f)
+              id(media_volume).publish_state(0.0f);
             return;
           }
           const Room &r = rooms()[i];
-          id(media_active_target) = coord_of(r);
+          // Right after a Group action the cache still holds the OLD
+          // group_members; keep the target the Group action set until HA
+          // reports the new grouping (group_pending_until_ms window).
+          uint32_t until = id(group_pending_until_ms);
+          if (until == 0 || (int32_t) (until - millis()) <= 0) {
+            id(group_pending_until_ms) = 0;
+            id(media_active_target) = coord_of(r);
+          }
           pub(id(media_state), display_state(r, is_tv(r)));
           pub(id(media_title), r.title);
           pub(id(media_artist), r.artist);
@@ -630,6 +644,14 @@ globals:
   - id: reconcile_unjoin
     type: std::string
     restore_value: false
+  # group_pending_until_ms: millis() deadline (~3 s) after a Rooms-modal Group
+  # action during which media_select_sync keeps the target the Group action set
+  # instead of re-resolving it from the not-yet-updated group_members cache
+  # (46t.17.6 window). 0 = no window.
+  - id: group_pending_until_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
   # Playlists modal: BARE base62 playlist IDs for the 8
   # grid tiles, parsed from the ids_8 attribute of sensor.spotify_panel_playlists.
   # Index 0..7 maps to tiles pl_tile_0..7. play_playlist re-adds the
@@ -1663,6 +1685,11 @@ lvgl:
                               - lambda: |-
                                   id(active_media_player) = id(staged_players).front();
                                   id(media_active_target) = id(staged_players).front();
+                                  id(group_pending_until_ms) = millis() + 3000;
+                              - script.execute: media_select_sync
+                              # Window over: re-resolve the target from the (by now
+                              # updated) group_members.
+                              - delay: 3100ms
                               - script.execute: media_select_sync
                   - button:
                       id: btn_ungroup

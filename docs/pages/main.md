@@ -62,8 +62,9 @@ The pickers and modals are provided by the media backend module
   `input_boolean.sonos_follow_me` is no longer written by the panel.
 - `media_player.*` for each roster room (see [media.md](media.md)). Now-playing
   reads the selected room's state, `media_title`, `media_artist`,
-  `entity_picture` and `volume_level` directly; `source` /
-  `media_content_id` mark TV / line-in audio so it never raises the hero.
+  `entity_picture` and `volume_level` directly; `media_content_id` marks TV /
+  line-in audio (`x-sonos-htastream` / `x-rincon-stream:`) so it never raises
+  the hero.
 
 If Home Assistant is unreachable at boot, the splash screen self-dismisses
 after 12 s and this page runs in its IDLE state; the settings cog's ring shows

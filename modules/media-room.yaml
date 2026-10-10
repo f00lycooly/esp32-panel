@@ -4,8 +4,9 @@
 # Binds media_player.${slug} directly and caches what HA pushes into
 # media_rooms::rooms()[${idx}] (modules/media-rooms.h). Every change kicks the
 # debounced media_rooms_changed script (page-media), which re-derives the
-# now-playing sensors and the playback target from the cache. 8 subscriptions
-# per room (56 total) — fine on the P4.
+# now-playing sensors and the playback target from the cache. 7 subscriptions
+# per room (49 total) — fine on the P4. TV / line-in is detected from
+# media_content_id alone (see media_rooms::is_tv), so `source` isn't bound.
 #
 # Usage (page-media.yaml):
 #   packages:
@@ -23,11 +24,21 @@ esphome:
             r.caption = "${caption}";
 
 text_sensor:
+  # ORDER MATTERS. HA sends one update per subscription, in the order the panel
+  # registered them (= the order below), and on every state change it re-sends
+  # all of them. So:
+  #   • media_content_id comes FIRST: a new content id clears the old
+  #     title/artist/art (media_rooms::set_content) before the new ones land.
+  #   • state comes LAST: when the room stops (idle/off/unavailable),
+  #     set_state clears the metadata AFTER the re-sent attributes, so they
+  #     can't repopulate it.
+  # HA never pushes an attribute's removal, hence the explicit clearing.
   - platform: homeassistant
-    id: media_room_${idx}_state
+    id: media_room_${idx}_content
     entity_id: media_player.${slug}
+    attribute: media_content_id
     on_value:
-      - lambda: 'media_rooms::rooms()[${idx}].state = x;'
+      - lambda: 'media_rooms::set_content(media_rooms::rooms()[${idx}], x);'
       - script.execute: media_rooms_changed
   - platform: homeassistant
     id: media_room_${idx}_title
@@ -50,21 +61,6 @@ text_sensor:
     on_value:
       - lambda: 'media_rooms::rooms()[${idx}].art = x;'
       - script.execute: media_rooms_changed
-  # source + media_content_id only feed TV detection (media_rooms::is_tv).
-  - platform: homeassistant
-    id: media_room_${idx}_source
-    entity_id: media_player.${slug}
-    attribute: source
-    on_value:
-      - lambda: 'media_rooms::rooms()[${idx}].source = x;'
-      - script.execute: media_rooms_changed
-  - platform: homeassistant
-    id: media_room_${idx}_content
-    entity_id: media_player.${slug}
-    attribute: media_content_id
-    on_value:
-      - lambda: 'media_rooms::rooms()[${idx}].content_id = x;'
-      - script.execute: media_rooms_changed
   # Python-list string, e.g. "['media_player.a', 'media_player.b']"; [0] is
   # the group coordinator.
   - platform: homeassistant
@@ -73,6 +69,12 @@ text_sensor:
     attribute: group_members
     on_value:
       - lambda: 'media_rooms::rooms()[${idx}].members = media_rooms::parse_members(x);'
+      - script.execute: media_rooms_changed
+  - platform: homeassistant
+    id: media_room_${idx}_state
+    entity_id: media_player.${slug}
+    on_value:
+      - lambda: 'media_rooms::set_state(media_rooms::rooms()[${idx}], x);'
       - script.execute: media_rooms_changed
 
 sensor:

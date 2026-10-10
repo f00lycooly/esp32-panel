@@ -55,8 +55,9 @@ tiles.
 - `media_player.<slug>` for every roster slot (any grouping-capable players;
   the reference setup uses Sonos).
   Each is bound directly for state, `media_title`, `media_artist`,
-  `entity_picture`, `volume_level`, `group_members`, `source` and
-  `media_content_id`. No HA package is needed. Only these 7 rooms are seen: a
+  `entity_picture`, `volume_level`, `group_members` and `media_content_id`
+  (an `x-sonos-htastream` / `x-rincon-stream:` content id marks TV /
+  line-in). No HA package is needed. Only these 7 rooms are seen: a
   group led by a speaker outside the roster still shows (via a roster member),
   but a group made only of unlisted speakers does not.
 
