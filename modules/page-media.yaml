@@ -128,16 +128,22 @@ script:
           const Room &r = rooms()[i];
           // Right after a Group action the cache still holds the OLD
           // group_members; keep the target the Group action set until HA
-          // reports the new grouping (group_pending_until_ms window).
+          // reports the new grouping (group_pending_until_ms window) — but
+          // only while the selection is still that Group's front. Any other
+          // pick ends the window and resolves to its own coordinator.
           uint32_t until = id(group_pending_until_ms);
-          if (until == 0 || (int32_t) (until - millis()) <= 0) {
+          bool pending = until != 0 && (int32_t) (until - millis()) > 0
+                         && id(active_media_player) == id(group_pending_front);
+          if (!pending) {
             id(group_pending_until_ms) = 0;
             id(media_active_target) = coord_of(r);
           }
-          pub(id(media_state), display_state(r, is_tv(r)));
+          bool tv = group_tv(i);   // judged on the coordinator, like room_status
+          pub(id(media_state), display_state(r, tv));
           // Cached metadata is never cleared (HA forwards deltas only), so
-          // hide it here while nothing is loaded (idle/off/unavailable).
-          bool loaded = media_loaded(r);
+          // hide it here while nothing is loaded (idle/off/unavailable) or the
+          // group is on TV (no art, the cache still has the music track's).
+          bool loaded = shows_media(i);
           pub(id(media_title), loaded ? r.title : std::string());
           pub(id(media_artist), loaded ? r.artist : std::string());
           pub(id(media_device_name), r.caption);
@@ -650,11 +656,15 @@ globals:
   # group_pending_until_ms: millis() deadline (~3 s) after a Rooms-modal Group
   # action during which media_select_sync keeps the target the Group action set
   # instead of re-resolving it from the not-yet-updated group_members cache
-  # (46t.17.6 window). 0 = no window.
+  # (46t.17.6 window). 0 = no window. group_pending_front = the Group's front
+  # room; the window only holds while active_media_player still equals it.
   - id: group_pending_until_ms
     type: uint32_t
     restore_value: false
     initial_value: '0'
+  - id: group_pending_front
+    type: std::string
+    restore_value: false
   # Playlists modal: BARE base62 playlist IDs for the 8
   # grid tiles, parsed from the ids_8 attribute of sensor.spotify_panel_playlists.
   # Index 0..7 maps to tiles pl_tile_0..7. play_playlist re-adds the
@@ -1688,7 +1698,8 @@ lvgl:
                               - lambda: |-
                                   id(active_media_player) = id(staged_players).front();
                                   id(media_active_target) = id(staged_players).front();
-                                  id(group_pending_until_ms) = millis() + 3000;
+                                  id(group_pending_front) = id(staged_players).front();
+                                  id(group_pending_until_ms) = (millis() + 3000) | 1;   // never the 0 sentinel
                               - script.execute: media_select_sync
                               # Window over: re-resolve the target from the (by now
                               # updated) group_members.

@@ -127,6 +127,19 @@ inline int resolve_room(const std::string &selected) {
   return -1;
 }
 
+// TV is judged on the group coordinator (as the old sonos_topology did); fall
+// back to the room itself when the coordinator is not one of the 7 slots.
+inline bool group_tv(int i) {
+  int ci = find_room(coord_of(rooms()[i]));
+  return is_tv(ci >= 0 ? rooms()[ci] : rooms()[i]);
+}
+
+// Whether room i's cached title/artist/art should be shown: a track is loaded
+// and the group is not on TV / line-in. On TV, Sonos reports a title ("TV")
+// but no artist / entity_picture, and since HA doesn't forward removals the
+// cache still holds the previous music track's art.
+inline bool shows_media(int i) { return media_loaded(rooms()[i]) && !group_tv(i); }
+
 // ═══════ Topology (replaces the HA sonos_topology package) ═══════
 // Rebuilt from the cache above in the formats the old sensor.sonos_topology
 // published, so the Rooms modal / Rooms Overview / auto-follow / Group code
@@ -191,11 +204,8 @@ struct RoomStatus {
 inline RoomStatus room_status(int i) {
   const Room &r = rooms()[i];
   std::string c = coord_of(r);
-  int ci = find_room(c);
   RoomStatus s;
-  // TV is judged on the coordinator; fall back to the room itself when the
-  // coordinator is not one of the 7 slots.
-  s.state = display_state(r, is_tv(ci >= 0 ? rooms()[ci] : r));
+  s.state = display_state(r, group_tv(i));
   s.coord = (c == entity_of(r)) ? 1 : 0;
   s.size = r.members.empty() ? 1 : (int) r.members.size();
   s.vol = vol_pct(r.volume);

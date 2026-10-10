@@ -163,6 +163,10 @@ entity ids.
   would not be re-sent). Title, artist and art are hidden while the room is
   not playing/paused. If a new track lacks an artist or art that the
   previous track had, the panel shows the old value for that track.
+- On TV / line-in, Sonos reports a title ("TV") but no artist or
+  entity_picture, so the cache still holds the last music track's art.
+  The panel therefore blanks title, artist and art whenever the room's group
+  is on TV (judged on the coordinator's `media_content_id`).
 
 ### 2.5 `sonos_topology.yaml` (106 lines, polled every 5 s). Verdict: **remove**
 

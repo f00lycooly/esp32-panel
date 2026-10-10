@@ -92,6 +92,31 @@ int main() {
   set_state(tv, "playing");
   CHECK(display_state(tv, is_tv(tv)) == "tv");
 
+  // TV judged on the coordinator; TV hides the stale music metadata
+  for (int i = 0; i < 7; i++) { rs[i] = Room(); rs[i].slug = slugs[i]; }
+  set_state(rs[0], "playing");                         // living_room: TV coordinator
+  set_content(rs[0], "x-sonos-htastream:RINCON_1:spdif");
+  rs[0].title = "TV"; rs[0].artist = "Band"; rs[0].art = "/api/old_album";   // stale from music
+  rs[0].members = parse_members("['media_player.living_room', 'media_player.kitchen']");
+  set_state(rs[1], "playing");                         // kitchen: member, own id not htastream
+  set_content(rs[1], "x-sonos-spotify:old");
+  rs[1].art = "/api/old_album";
+  rs[1].members = rs[0].members;
+  CHECK(group_tv(0) && group_tv(1));
+  CHECK(!shows_media(0) && !shows_media(1));
+  CHECK(room_status(1).state == "tv");
+  // coordinator back on music -> member shows media again
+  set_content(rs[0], "x-sonos-spotify:new");
+  CHECK(!group_tv(1) && shows_media(1) && shows_media(0));
+  // unconfigured coordinator -> judged on the room itself
+  rs[3].members = parse_members("['media_player.loft', 'media_player.office']");
+  set_state(rs[3], "playing");
+  set_content(rs[3], "x-rincon-stream:RINCON_9");
+  CHECK(group_tv(3) && !shows_media(3));
+  set_state(rs[4], "idle");
+  rs[4].art = "/api/x";
+  CHECK(!shows_media(4));
+
   printf(fails ? "test_rooms: FAILED %d\n" : "test_rooms: ALL PASS\n", fails);
   return fails != 0;
 }
