@@ -37,16 +37,14 @@ non-commercial homage; see the attribution note in
 
 | Substitution | Meaning | Example |
 |---|---|---|
-| `weather_forecast_entity` | The panel-friendly forecast wrapper sensor | `sensor.panel_weather_forecast` |
+| `weather_entity` | Any HA `weather.*` entity; the panel fetches its daily forecast itself | `weather.forecast_home` |
 
 ### Home Assistant entities
 
-- `sensor.panel_weather_forecast` — from
-  [`homeassistant/examples/weather_forecast.yaml`](../../homeassistant/examples/weather_forecast.yaml).
-  HA `weather.*` entities only expose *current* conditions as attributes;
-  daily hi/lo must be fetched with the `weather.get_forecasts` service, so the
-  wrapper is a trigger-based template sensor that calls it on a schedule and
-  republishes the first two days as compact attributes.
+- `weather.*` (your `weather_entity`) — the panel calls the `weather.get_forecasts`
+  action (daily) on API connect and every 30 minutes, and shows today and
+  tomorrow. Requires Home Assistant 2025.10 or newer. If a fetch fails the
+  screensaver keeps the last values.
 - The battery pill reads the shared battery sensors (see
   [energy.md](energy.md)).
 

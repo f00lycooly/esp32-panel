@@ -182,9 +182,9 @@ substitutions:
   clim_pressure_entity: sensor.heating_water_pressure                          # CHANGE
 
   # ── Weather / screensaver ───────────────────────────────────────────────────
-  # Processed forecast wrapper (today + tomorrow attributes) — create from
-  # homeassistant/examples/weather_forecast.yaml over your weather.* entity.
-  weather_forecast_entity: sensor.panel_weather_forecast   # CHANGE
+  # Any HA weather.* entity (e.g. met.no). The panel fetches today/tomorrow via
+  # weather.get_forecasts (needs HA >= 2025.10) — no HA-side helper required.
+  weather_entity: weather.forecast_home   # CHANGE
 
   # ── Timer ───────────────────────────────────────────────────────────────────
   # HA timer helper mirrored by the timer page (Assist "set a timer" targets
