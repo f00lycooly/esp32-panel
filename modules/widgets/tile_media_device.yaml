@@ -7,7 +7,7 @@
 # refresh_device_sel (otg / Option B gradient cards) — coordinator = ep_blue VER
 # gradient + "HUB" chip + dark glyph/caption, member = blue-tint gradient + 2px
 # ep_blue outline, idle = slate gradient card. A self-evident play/pause glyph
-# (driven by the .22 topology text_sensors) marks live playback, independent of
+# (driven by media_topology_sync via apply_room_status) marks live playback, independent of
 # staging — so the modal needs no legend ( redesign).
 #
 # Children are label/obj only (non-clickable) so the tile is immune to the LVGL v9
@@ -42,7 +42,7 @@ button:
   grid_cell_x_align: STRETCH
   grid_cell_y_align: STRETCH
   widgets:
-    # Live playback marker (top-left) — set by apply_room_status from the .22
+    # Live playback marker (top-left) — set by apply_room_status from the panel-side
     # topology: play glyph = playing (green), pause glyph = paused (amber),
     # hidden = idle. Self-evident, so the modal needs no legend.
     - label:

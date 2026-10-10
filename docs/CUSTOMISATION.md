@@ -67,8 +67,9 @@ rooms fill the slots is your config. A "slug" is the entity id minus the
 | `media_room_0_caption` … `media_room_6_caption` | Tile caption per slot |
 
 Slot order also defines the topology→tile mapping, so keep slug/caption pairs
-aligned. Live group *state* still comes from `sensor.sonos_topology`; the roster
-is only the layout.
+aligned. Live group state is derived on the panel from each room's
+`group_members`, so only rooms in this roster are seen; adding a speaker means
+editing the roster and re-flashing.
 
 ### Alarm speaker roster
 

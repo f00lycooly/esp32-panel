@@ -15,7 +15,8 @@
 
 # Per-room media_player bindings: one package per compile-time slot. Each binds
 # media_player.${media_room_N_slug} directly and caches into media_rooms::rooms()
-# (media-rooms.h), replacing the old per-panel HA mirror sensor + input_text.
+# (media-rooms.h), replacing the old per-panel HA mirror sensor + input_text and
+# the polled sensor.sonos_topology (topology is derived from group_members).
 esphome:
   includes:
     - modules/media-rooms.h
@@ -58,15 +59,38 @@ font:
       - $mdi_compass
 
 script:
-  # ═══════ Per-room cache → now-playing (replaces the HA mirror) ═══════
+  # ═══════ Per-room cache → topology + now-playing ═══════
   # Every per-room on_value (media-room.yaml) runs this. mode: restart + a short
   # delay coalesces the burst HA sends on connect / on a group change into one
-  # recompute.
+  # recompute. Event-driven: nothing polls HA.
   - id: media_rooms_changed
     mode: restart
     then:
       - delay: 100ms
+      - script.execute: media_topology_sync
       - script.execute: media_select_sync
+
+  # Rebuild the group topology from the per-room group_members (replaces the HA
+  # sonos_topology package; same formats, see media_rooms::room_status and
+  # playing_groups):
+  #   • per room → room_state[] / room_vol[] + apply_room_status("state|coord|size")
+  #   • playing (non-TV) groups → sonos_g[0..3] blobs
+  #     "coordSlug|playing|vol|label|membersCsv|title|artist|art", sonos_g_count.
+  # Rooms with no state yet (HA not connected) keep their defaults.
+  - id: media_topology_sync
+    then:
+      - lambda: |-
+          using namespace media_rooms;
+          for (int i = 0; i < kRooms; i++) {
+            if (rooms()[i].state.empty()) continue;
+            RoomStatus s = room_status(i);
+            id(room_state)[i] = s.state;
+            id(room_vol)[i] = s.vol;
+            id(apply_room_status)->execute(i, s.info());
+          }
+          std::vector<std::string> gs = playing_groups();
+          for (int i = 0; i < 4; i++) id(sonos_g)[i] = i < (int) gs.size() ? gs[i] : std::string();
+          id(sonos_g_count) = (int) gs.size();
 
   # Re-derive everything that follows the SELECTED room (active_media_player)
   # from the per-room cache. Runs on any room change and wherever the selection
@@ -219,8 +243,8 @@ script:
           };
           if (found) {
             add(coord);                                       // coordinator → index 0
-            // Members token list — split on comma OR space (the HA topology
-            // template's delimiter isn't visible here, so accept either).
+            // Members token list — media_topology_sync joins slugs with commas;
+            // spaces are accepted too for robustness.
             std::string tok;
             for (size_t i = 0; i <= members.size(); i++) {
               char ch = (i < members.size()) ? members[i] : ',';
@@ -265,7 +289,8 @@ script:
       - script.execute: refresh_device_sel
 
   # Rooms modal: read a tile's live HA
-  # state from its topology string "<state>|<is_coordinator>|<group_size>". Drives
+  # state from its topology string "<state>|<is_coordinator>|<group_size>"
+  # (built by media_topology_sync). Drives
   # the self-evident play/pause glyph (play=playing green / pause=paused amber /
   # hidden=idle). Group-role is no longer badged (no-legend redesign) but the live
   # coord/size are still cached so Group can decide whether to free the coordinator.
@@ -309,7 +334,7 @@ script:
   # paused) room. This script, run on the 1s interval (page-main), ADOPTS the single
   # actively-playing group when the current target is NOT playing — repointing the
   # selection so the hero/art/chip follow.
-  #   • sonos_g[] holds ONLY playing groups (template excludes paused), so a non-empty
+  #   • sonos_g[] holds ONLY playing groups (paused/TV excluded), so a non-empty
   #     slot == a playing group; exactly one non-empty slot == unambiguous, adopt it.
   #   • Never yanks a target that is itself playing (don't interrupt mid-listen), and
   #     honours a 60s hold after an explicit pick (last_manual_ms) so a manual select
@@ -545,8 +570,8 @@ globals:
   - id: staged_players
     type: std::vector<std::string>
     restore_value: false
-  # Live HA group role/size per room (index 0..6 = living/kitchen/kitchen_2/office/
-  # bedroom/garage/roam), kept current by apply_room_status from the .22 topology.
+  # Live HA group role/size per room (index 0..6 = media_room_0..6 slots), kept
+  # current by apply_room_status from media_topology_sync.
   # Used by Group to decide whether the chosen coordinator must be freed first.
   # Defaults (coord=0, size=1) mean "standalone" -> Group does a non-destructive add.
   - id: room_coord
@@ -557,15 +582,15 @@ globals:
     type: int[7]
     restore_value: false
     initial_value: '{1, 1, 1, 1, 1, 1, 1}'
-  # Live per-room volume % (0..100; -1 = unknown), cached from sensor.sonos_topology
-  # `rooms` by topo_rooms. Index order matches room_coord/room_size. Feeds the Rooms
+  # Live per-room volume % (0..100; -1 = unknown), set by media_topology_sync.
+  # Index order matches room_coord/room_size. Feeds the Rooms
   # Overview grid per-card volume bars ( Step 4b).
   - id: room_vol
     type: int[7]
     restore_value: false
     initial_value: '{-1, -1, -1, -1, -1, -1, -1}'
-  # Live per-room state string (playing|paused|idle|unavailable), cached from the
-  # `rooms` attribute by topo_rooms. Index order matches room_coord. Feeds the Rooms
+  # Live per-room state string (playing|paused|idle|tv|unavailable), set by
+  # media_topology_sync. Index order matches room_coord. Feeds the Rooms
   # Overview grid idle-room cards ( Step 4b).
   - id: room_state
     type: std::string[7]
@@ -576,7 +601,7 @@ globals:
   - id: gc_coord
     type: std::string[6]
     restore_value: false
-  # Raw playing-group blobs g0..g3 from sensor.sonos_topology ( Step 4b/4c).
+  # Playing-group blobs g0..g3 built by media_topology_sync ( Step 4b/4c).
   # Each = "coordSlug|state|vol|label|membersCsv|title|artist|artPath" (art LAST) or
   # "" for an empty slot. Parsed on demand by the Rooms Overview grid + group picker.
   - id: sonos_g
@@ -740,84 +765,6 @@ text_sensor:
     id: media_artist
     internal: true
     update_interval: never
-  # Live per-room status (Rooms modal + multiroom rows). ONE text_sensor reads the
-  # combined `rooms` attribute off sensor.sonos_topology — "slug|state|isCoord|size|vol;…"
-  # for every discovered Sonos (sorted by slug, fully dynamic) — and fans it out to
-  # apply_room_status by mapping each slug to its fixed panel room index. New speakers
-  # appear automatically; unmapped slugs are ignored. (Replaces the old 7 per-room
-  # attributes from the sonos topology sensor —  dynamic re-model.)
-  # Per-room volume (vol%) is cached into room_vol[] for the Rooms Overview grid (4b).
-  - platform: homeassistant
-    id: topo_rooms
-    entity_id: sensor.sonos_topology
-    attribute: rooms
-    on_value:
-      - lambda: |-
-          auto idx_of = [](const std::string& slug) -> int {
-            if (slug == "${media_room_0_slug}") return 0;
-            if (slug == "${media_room_1_slug}") return 1;
-            if (slug == "${media_room_2_slug}") return 2;
-            if (slug == "${media_room_3_slug}") return 3;
-            if (slug == "${media_room_4_slug}") return 4;
-            if (slug == "${media_room_5_slug}") return 5;
-            if (slug == "${media_room_6_slug}") return 6;
-            return -1;
-          };
-          std::string s = x;
-          size_t start = 0;
-          while (start < s.size()) {
-            size_t semi = s.find(';', start);
-            std::string row = (semi == std::string::npos) ? s.substr(start) : s.substr(start, semi - start);
-            start = (semi == std::string::npos) ? s.size() : semi + 1;
-            if (row.empty()) continue;
-            // row = slug|state|isCoord|size|vol
-            size_t a = row.find('|');
-            if (a == std::string::npos) continue;
-            std::string slug = row.substr(0, a);
-            int idx = idx_of(slug);
-            if (idx < 0) continue;
-            std::string rest = row.substr(a + 1);           // state|isCoord|size|vol
-            size_t v = rest.rfind('|');                     // trim trailing |vol
-            std::string info = (v == std::string::npos) ? rest : rest.substr(0, v);
-            int vol = (v == std::string::npos) ? -1 : atoi(rest.substr(v + 1).c_str());
-            size_t sp = info.find('|');
-            std::string st = (sp == std::string::npos) ? info : info.substr(0, sp);
-            if (idx >= 0 && idx < 7) { id(room_vol)[idx] = vol; id(room_state)[idx] = st; }
-            id(apply_room_status)->execute(idx, info);      // info = state|coord|size
-          }
-  # Playing-group blobs g0..g3 + g_count from sensor.sonos_topology ( 4b/4c).
-  # Cached raw into sonos_g[]/sonos_g_count; the Rooms Overview grid + group picker
-  # parse them on refresh. (grid_refresh wired in Step 4b-ii.)
-  - platform: homeassistant
-    id: topo_g0
-    entity_id: sensor.sonos_topology
-    attribute: g0
-    on_value:
-      - lambda: 'id(sonos_g)[0] = x;'
-  - platform: homeassistant
-    id: topo_g1
-    entity_id: sensor.sonos_topology
-    attribute: g1
-    on_value:
-      - lambda: 'id(sonos_g)[1] = x;'
-  - platform: homeassistant
-    id: topo_g2
-    entity_id: sensor.sonos_topology
-    attribute: g2
-    on_value:
-      - lambda: 'id(sonos_g)[2] = x;'
-  - platform: homeassistant
-    id: topo_g3
-    entity_id: sensor.sonos_topology
-    attribute: g3
-    on_value:
-      - lambda: 'id(sonos_g)[3] = x;'
-  - platform: homeassistant
-    id: topo_gcount
-    entity_id: sensor.sonos_topology
-    attribute: g_count
-    on_value:
-      - lambda: 'id(sonos_g_count) = atoi(x.c_str());'
   # Playlists modal: the SpotifyPlus glue (spotify_panel.yaml,
   # ) republishes the first 8 favourite playlists as two newline-joined
   # attributes on sensor.spotify_panel_playlists. names_8 → grid tile captions
@@ -1546,7 +1493,7 @@ lvgl:
                 on_click:
                   - script.execute: popup_close
             # Selection summary (updated by refresh_device_sel). Green dot on a tile
-            # = that room is currently playing (from the .22 topology sensor).
+            # = that room is currently playing (from media_topology_sync).
             - label: {id: lbl_rooms_status, align: TOP_MID, y: 12, text_font: oswald_18, text_color: gray400, text: "Tap rooms to group"}
             # Staged multi-select grid — 7 Sonos rooms.
             # First tap = coordinator (solid ep_blue); further taps = members

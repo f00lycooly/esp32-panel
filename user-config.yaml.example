@@ -53,8 +53,9 @@ substitutions:
   # WHICH rooms fill the slots is config. A "slug" is the entity id minus the
   # media_player. domain; modules rebuild the full id as media_player.${slug}.
   # Slot order also defines the topology→tile index map, so keep slug/caption
-  # pairs aligned. The room-state source is the sonos topology sensor
-  # (homeassistant/examples/sonos_topology.yaml); this roster is the layout.
+  # pairs aligned. Each slot binds media_player.${slug} directly; group
+  # topology is derived on the panel from group_members, so only these rooms
+  # are seen (a new speaker needs a roster edit + re-flash).
   media_local_slug: living_room          # this panel's default play target  # CHANGE
   media_room_0_slug: living_room                                             # CHANGE
   media_room_0_caption: "Living Rm"

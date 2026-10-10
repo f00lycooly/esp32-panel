@@ -17,8 +17,10 @@ The second page of the MAIN function (swipe left from
 - A **now-playing mini-dock** (bottom ~25% of the screen) shows the current
   track with previous / play-pause / next transport.
 
-Group state is live: the rows repaint from the topology sensor whenever
-speakers group or ungroup, whoever initiated it.
+Group state is live: the panel derives it from each room's `group_members`
+(a room whose `group_members[0]` is itself is a coordinator) and repaints as
+soon as HA reports speakers grouping or ungrouping, whoever initiated it — no
+polling.
 
 ### The media backend
 
@@ -52,8 +54,11 @@ tiles.
 
 - `media_player.<slug>` for every roster slot (any grouping-capable players;
   the reference setup uses Sonos).
-- `sensor.sonos_topology` — group topology (coordinator + members per group),
-  from [`homeassistant/examples/sonos_topology.yaml`](../../homeassistant/examples/sonos_topology.yaml).
+  Each is bound directly for state, `media_title`, `media_artist`,
+  `entity_picture`, `volume_level`, `group_members`, `source` and
+  `media_content_id`. No HA package is needed. Only these 7 rooms are seen: a
+  group led by a speaker outside the roster still shows (via a roster member),
+  but a group made only of unlisted speakers does not.
 
 ---
 [← Main / Now Playing](main.md) · Next: [Climate →](climate.md) · [Back to customisation](../CUSTOMISATION.md)

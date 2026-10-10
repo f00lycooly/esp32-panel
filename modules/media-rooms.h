@@ -3,13 +3,15 @@
 // Pulled in by page-media.yaml (`esphome: includes:`). Each room slot
 // (media-room.yaml, one package per slot) binds media_player.<slug> directly
 // and writes what HA pushes into rooms()[idx]; page-media's scripts read the
-// cache back to paint now-playing and resolve the playback target. This
-// replaces the per-panel HA mirror sensor + input_text selection helper.
+// cache back to paint now-playing, resolve the playback target and rebuild the
+// group topology. This replaces the per-panel HA mirror sensor + input_text
+// selection helper and the polled sensor.sonos_topology template.
 //
 // Plain C++ with no ESPHome dependencies, so the logic can be unit-tested on
 // the host (g++ -std=c++17).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -103,6 +105,125 @@ inline int resolve_room(const std::string &selected) {
   for (int j = 0; j < kRooms; j++)
     if (!rs[j].slug.empty() && coord_of(rs[j]) == selected) return j;
   return -1;
+}
+
+// ═══════ Topology (replaces the HA sonos_topology package) ═══════
+// Rebuilt from the cache above in the formats the old sensor.sonos_topology
+// published, so the Rooms modal / Rooms Overview / auto-follow / Group code
+// reads the same strings. Semantics follow the old Jinja: a room is a
+// coordinator when group_members[0] is itself; a group on an external input
+// (judged on its coordinator) is `tv`, never `playing`.
+//
+// Limit vs the old template: only the 7 configured rooms are seen. A
+// coordinator outside the 7 is inferred from a configured member's
+// group_members (its state / volume / track come from that member, which
+// Sonos keeps in step with the coordinator); a group made only of
+// unconfigured rooms is invisible.
+
+inline std::string slug_of(const std::string &entity) {
+  size_t d = entity.rfind('.');
+  return d == std::string::npos ? entity : entity.substr(d + 1);
+}
+
+// "living_room" -> "Living Room" (label for a member outside the 7 slots).
+inline std::string pretty_slug(const std::string &slug) {
+  std::string out;
+  bool up = true;
+  for (char c : slug) {
+    if (c == '_') { out += ' '; up = true; continue; }
+    out += up ? (char) std::toupper((unsigned char) c) : c;
+    up = false;
+  }
+  return out;
+}
+
+inline std::string label_of(const std::string &entity) {
+  int i = find_room(entity);
+  if (i >= 0 && !rooms()[i].caption.empty()) return rooms()[i].caption;
+  return pretty_slug(slug_of(entity));
+}
+
+// volume_level 0..1 -> rounded percent; unknown -> 0 (Jinja float(0)).
+inline int vol_pct(float v) {
+  if (std::isnan(v)) return 0;
+  return (int) std::lround(v * 100.0f);
+}
+
+// '|' separates blob fields; keep it out of free text (track titles).
+inline std::string clean(const std::string &s) {
+  std::string out = s;
+  for (auto &c : out) if (c == '|') c = '/';
+  return out;
+}
+
+// Per-room row: what the old `rooms` attribute carried for one speaker.
+struct RoomStatus {
+  std::string state;  // HA state, `tv` instead of `playing` on an external input
+  int coord = 0;      // 1 when this room is its group's coordinator
+  int size = 1;       // group size (1 = standalone)
+  int vol = 0;        // volume %
+  // "state|isCoord|size" — the apply_room_status contract.
+  std::string info() const {
+    return state + "|" + std::to_string(coord) + "|" + std::to_string(size);
+  }
+};
+
+inline RoomStatus room_status(int i) {
+  const Room &r = rooms()[i];
+  std::string c = coord_of(r);
+  int ci = find_room(c);
+  RoomStatus s;
+  // TV is judged on the coordinator; fall back to the room itself when the
+  // coordinator is not one of the 7 slots.
+  s.state = display_state(r, is_tv(ci >= 0 ? rooms()[ci] : r));
+  s.coord = (c == entity_of(r)) ? 1 : 0;
+  s.size = r.members.empty() ? 1 : (int) r.members.size();
+  s.vol = vol_pct(r.volume);
+  return s;
+}
+
+// Every PLAYING (non-TV) group, one blob per coordinator, sorted by
+// coordinator entity id (the old g0..g3 order; callers keep the first 4, and
+// size() is the old g_count):
+//   "coordSlug|playing|vol|label|membersCsv|title|artist|art"
+// label = member captions joined " + "; membersCsv = member slugs.
+inline std::vector<std::string> playing_groups() {
+  auto &rs = rooms();
+  struct G { std::string coord; int rep; };
+  std::vector<G> gs;
+  for (int i = 0; i < kRooms; i++) {
+    if (rs[i].slug.empty()) continue;
+    std::string c = coord_of(rs[i]);
+    bool seen = false;
+    for (auto &g : gs) if (g.coord == c) { seen = true; break; }
+    if (seen) continue;
+    int rep = find_room(c);
+    if (rep >= 0) {
+      // A configured coordinator must agree it leads (group_members[0] == self).
+      if (coord_of(rs[rep]) != c) continue;
+    } else {
+      rep = i;  // unconfigured coordinator: first configured member stands in
+    }
+    const Room &r = rs[rep];
+    if (r.state != "playing" || is_tv(r)) continue;
+    gs.push_back({c, rep});
+  }
+  std::sort(gs.begin(), gs.end(), [](const G &a, const G &b) { return a.coord < b.coord; });
+  std::vector<std::string> out;
+  for (auto &g : gs) {
+    const Room &r = rs[g.rep];
+    std::vector<std::string> ms = r.members;
+    if (ms.empty()) ms.push_back(g.coord);
+    std::string label, csv;
+    for (size_t k = 0; k < ms.size(); k++) {
+      if (k) { label += " + "; csv += ","; }
+      label += label_of(ms[k]);
+      csv += slug_of(ms[k]);
+    }
+    out.push_back(slug_of(g.coord) + "|playing|" + std::to_string(vol_pct(r.volume)) + "|" +
+                  clean(label) + "|" + csv + "|" + clean(r.title) + "|" + clean(r.artist) + "|" + r.art);
+  }
+  return out;
 }
 
 }  // namespace media_rooms
