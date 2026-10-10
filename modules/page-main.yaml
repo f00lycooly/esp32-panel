@@ -57,6 +57,7 @@ esphome:
   on_boot:
     - priority: -100
       then:
+        - script.execute: fm_repaint
         - delay: 12s
         - if:
             condition:
@@ -888,9 +889,10 @@ lvgl:
             text_color: gray500
 
         # ───────────── FOLLOW ME toggle ( 4d) ─────────────
-        # Global mode (input_boolean.sonos_follow_me): OFF = music stays where
-        # started; ON = the stream follows you room→room (NR flow). Tap toggles HA;
-        # follow_me_state (binary_sensor) repaints the pill. Inner obj centres the
+        # Global mode (local ESPHome switch follow_me, exposed to HA as
+        # switch.<panel>_follow_me): OFF = music stays where started; ON = the
+        # stream follows you room→room (external automation reads the switch).
+        # Tap toggles the local switch; its on_state repaints the pill. Inner obj centres the
         # row (flex-on-button is unreliable — centre via an auto-sized child).
         - button:
             id: btn_follow_me
@@ -919,22 +921,20 @@ lvgl:
                     - label: {id: fm_label,  clickable: false, text: "Follow Me", text_font: oswald_24, text_color: white}
                     - label: {id: fm_status, clickable: false, text: "OFF", text_font: oswald_20, text_color: gray500}
             on_click:
-              - homeassistant.action:
-                  action: input_boolean.toggle
-                  data: {entity_id: input_boolean.sonos_follow_me}
+              - switch.toggle: follow_me_state
 
-# ───── Follow Me state mirror ( 4d): repaint the pill from HA ─────
-binary_sensor:
-  - platform: homeassistant
+# ───── Follow Me switch ( 4d): local state, repaints the pill, visible to HA ─────
+switch:
+  - platform: template
+    name: "Follow me"
     id: follow_me_state
-    entity_id: input_boolean.sonos_follow_me
+    icon: mdi:walk
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    # Restore publishes state during setup, before LVGL builds the widgets —
+    # fm_repaint guards that; on_boot (-100) repaints once LVGL is up.
     on_state:
-      - lambda: |-
-          bool on = x;
-          lv_obj_set_style_text_color(id(fm_glyph),  lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
-          lv_obj_set_style_text_color(id(fm_status), lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
-          lv_label_set_text(id(fm_status), on ? "ON" : "OFF");
-          lv_obj_set_style_border_color(id(btn_follow_me), lv_color_hex(on ? 0x01B4DE : 0x404040), 0);
+      - script.execute: fm_repaint
 
 # ───── Now-Playing / Multi-Room refresh (1s) ─────
 # np_refresh/mr_refresh early-return unless their page is showing (main_active /
@@ -949,6 +949,16 @@ interval:
       - script.execute: adopt_playing_group
 
 script:
+  - id: fm_repaint
+    then:
+      - lambda: |-
+          if (id(fm_glyph) == nullptr) return;
+          bool on = id(follow_me_state).state;
+          lv_obj_set_style_text_color(id(fm_glyph),  lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
+          lv_obj_set_style_text_color(id(fm_status), lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
+          lv_label_set_text(id(fm_status), on ? "ON" : "OFF");
+          lv_obj_set_style_border_color(id(btn_follow_me), lv_color_hex(on ? 0x01B4DE : 0x404040), 0);
+
   # ───────────── Now-Playing state machine + presentation (.1) ─────────────
   # Reads the M2 now-playing sensors (.state) and switches IDLE ↔ PLAYING, paints
   # the source/title/artist block + the overlay transport glyph + the play button.

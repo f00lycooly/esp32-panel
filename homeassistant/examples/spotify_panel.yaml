@@ -8,7 +8,7 @@
 # CHANGE: media_player.spotifyplus_myaccount → your SpotifyPlus media_player
 # entity (one per service call below).
 #
-# SpotifyPlus exposes playlists/devices via *services that return response data*,
+# SpotifyPlus exposes playlists/artists via *services that return response data*,
 # not as static sensors. The panel needs to read them as plain HA entities/attributes, so
 # these trigger-based template sensors call the services on a schedule (+ HA start
 # + a manual `spotify_panel_refresh` event) and republish the results as:
@@ -87,31 +87,6 @@ template:
           cover_5: "{{ ((pl.result['items'] if pl.result is defined else [])[5:6] | map(attribute='image_url') | list + [''])[0] }}"
           cover_6: "{{ ((pl.result['items'] if pl.result is defined else [])[6:7] | map(attribute='image_url') | list + [''])[0] }}"
           cover_7: "{{ ((pl.result['items'] if pl.result is defined else [])[7:8] | map(attribute='image_url') | list + [''])[0] }}"
-
-  - trigger:
-      - platform: homeassistant
-        event: start
-      - platform: time_pattern
-        minutes: "/5"
-      - platform: event
-        event_type: spotify_panel_refresh
-    action:
-      - service: spotifyplus.get_player_devices
-        data:
-          entity_id: media_player.spotifyplus_myaccount   # CHANGE
-          refresh: true
-          sort_result: true
-        response_variable: dev
-    sensor:
-      - name: "Spotify Panel Devices"
-        unique_id: spotify_panel_devices
-        icon: mdi:speaker-multiple
-        state: "{{ (dev.result | default([], true)) | count }}"
-        attributes:
-          names: "{{ (dev.result | default([], true)) | map(attribute='name') | list }}"
-          ids: "{{ (dev.result | default([], true)) | map(attribute='id') | list }}"
-          names_lines: "{{ (dev.result | default([], true)) | map(attribute='name') | join('\n') }}"
-          ids_lines: "{{ (dev.result | default([], true)) | map(attribute='id') | join('\n') }}"
 
   # Browse › Artists sub-view: the panel Browse takeover's
   # Artists grid is driven from the user's TOP ARTISTS (a stable, readily-available

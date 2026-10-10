@@ -94,13 +94,3 @@ template:
               {% endif %}
             {% endfor %}
             {{ ns.label }}
-
-# ── Follow-Me toggle ─────────────────────────────────────────────────────────
-# The main page's Follow-Me chip toggles this boolean. The follow-me BEHAVIOUR
-# (moving music between rooms on presence) is an external automation of your
-# choice reading this flag — the panel only sets/reads it. Without an
-# automation the chip is a harmless on/off indicator.
-input_boolean:
-  sonos_follow_me:
-    name: Sonos Follow Me
-    icon: mdi:speaker-wireless

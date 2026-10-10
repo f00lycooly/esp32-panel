@@ -18,8 +18,8 @@ gesture lands). It is the music surface, with three visual states:
 - **TAPPED** — a ~62% dim overlay with the transport
   (shuffle / previous / play-pause / next / repeat), a horizontal volume
   slider, the Pick / Browse / Rooms quick-launch tiles, and a **Follow-Me**
-  toggle (`input_boolean.sonos_follow_me`) for hand-off-as-you-move-room
-  setups.
+  toggle (the panel's own `switch.<panel_name>_follow_me`) for
+  hand-off-as-you-move-room setups.
 
 ### Interactions
 
@@ -61,9 +61,10 @@ The pickers and modals are provided by the media backend module
   (one package per panel).
 - `sensor.spotify_panel_*` — from
   [`homeassistant/examples/spotify_panel.yaml`](../../homeassistant/examples/spotify_panel.yaml).
-- `input_boolean.sonos_follow_me` — optional (ships in
-  [`homeassistant/examples/sonos_topology.yaml`](../../homeassistant/examples/sonos_topology.yaml));
-  the Follow-Me toggle no-ops without it.
+- Follow-Me is a switch on the panel itself (`switch.<panel_name>_follow_me`,
+  restored across reboots, default OFF); no HA helper is needed. An external
+  follow-me automation must read that switch — the old
+  `input_boolean.sonos_follow_me` is no longer written by the panel.
 - `media_player.*` for each roster room (see [media.md](media.md)).
 
 If Home Assistant is unreachable at boot, the splash screen self-dismisses
