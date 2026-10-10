@@ -14,7 +14,7 @@
 #          IN  = PV / Battery(discharge) / Grid(import)
 #          OUT = Home / EV / HeatPump / Battery(charge) / Export, each split by
 #          source. Day totals come from recorder.get_statistics on the Energy-
-#          dashboard kWh counters (fetch_energy_today); split per path on-panel.
+#          dashboard kWh counters, split per 5-min bucket HA-side (fetch_energy_today).
 #
 # Top bar: the singleton bar (modules/top-bar.yaml, ) draws battery·clock·cog
 # on top_layer over BOTH pages — these pages draw NO top bar and keep content
@@ -73,6 +73,9 @@ globals:
   - {id: df_pv_hp, type: float, restore_value: false, initial_value: "0.0"}
   - {id: df_bat_hp, type: float, restore_value: false, initial_value: "0.0"}
   - {id: df_grid_hp, type: float, restore_value: false, initial_value: "0.0"}
+  # Day-of-year of the last successful fetch (-1 = none): lets on_error clear
+  # yesterday's totals after midnight instead of showing them all day.
+  - {id: df_day, type: int, restore_value: false, initial_value: "-1"}
 
 # ───────────────────────── HA sensors ─────────────────────────
 sensor:
@@ -551,15 +554,14 @@ script:
           }
 
   # ════════════════ "Today" day totals (recorder statistics) ════════════════
-  # Asks HA for today's change on the Energy-dashboard kWh counters (one
-  # recorder.get_statistics call, 5-minute changes from local midnight summed
-  # HA-side) and splits them into the Sankey's flow paths on the panel, the way
-  # HA's energy-distribution card does. Per-source / per-sink totals are exact; the
-  # source→EV/HP attribution is a proportional share of the day's home source
-  # mix (the instant-by-instant split is not recoverable from day totals).
-  # 5-minute short-term statistics keep the totals within ~5 min of live (hourly
-  # long-term stats lagged up to an hour); the panel still gets 7 numbers. An empty
-  # EV/HP substitution is dropped from the query and reads as 0. Needs
+  # One recorder.get_statistics call returns today's 5-minute changes on the
+  # Energy-dashboard kWh counters. The response_template splits EVERY 5-minute
+  # bucket into flow paths HA-side (the way HA's energy-distribution card does)
+  # and sums them, so the panel receives the 13 path totals ready to draw.
+  # Per-bucket allocation keeps time-of-day right (e.g. overnight grid→battery
+  # charging is not netted against daytime PV). Short-term statistics compile
+  # every 5 min and this polls every 5 min unaligned, so totals trail live by up
+  # to ~10 min. An empty EV/HP substitution is dropped and reads as 0. Needs
   # HA >= 2025.10 and "Allow the device to perform Home Assistant actions".
   - id: fetch_energy_today
     mode: single
@@ -580,18 +582,70 @@ script:
           capture_response: true
           response_template: >-
             {% set stats = response.statistics %}
-            {% macro kwh(sid) %}
-              {% set raw = stats.get(sid, []) | map(attribute='change') | select('number') | sum %}
-              {% set unit = state_attr(sid, 'unit_of_measurement') | default('kWh') %}
-              {% if unit == 'MWh' %}{{ raw * 1000 }}{% elif unit == 'Wh' %}{{ raw / 1000 }}{% else %}{{ raw }}{% endif %}
-            {% endmacro %}
-            {{ {'pv': kwh('${en_pv_energy_entity}') | float(0),
-                'imp': kwh('${en_grid_import_energy_entity}') | float(0),
-                'exp': kwh('${en_grid_export_energy_entity}') | float(0),
-                'chg': kwh('${en_batt_charge_energy_entity}') | float(0),
-                'dis': kwh('${en_batt_discharge_energy_entity}') | float(0),
-                'ev': kwh('${en_ev_energy_entity}') | float(0),
-                'hp': kwh('${en_hp_energy_entity}') | float(0)} | tojson }}
+            {% set ids = {'pv': '${en_pv_energy_entity}',
+                          'imp': '${en_grid_import_energy_entity}',
+                          'exp': '${en_grid_export_energy_entity}',
+                          'chg': '${en_batt_charge_energy_entity}',
+                          'dis': '${en_batt_discharge_energy_entity}',
+                          'ev': '${en_ev_energy_entity}',
+                          'hp': '${en_hp_energy_entity}'} %}
+            {# per counter: bucket start -> change, scaled to kWh #}
+            {% set ns = namespace(series=[], starts=[]) %}
+            {% for key, sid in ids.items() %}
+              {% set rows = stats.get(sid, []) if sid else [] %}
+              {% set unit = state_attr(sid, 'unit_of_measurement') if sid else none %}
+              {% set k = 1000 if unit == 'MWh' else (0.001 if unit == 'Wh' else 1) %}
+              {% set starts = rows | map(attribute='start') | list %}
+              {% set kwh = rows | map(attribute='change') | map('float', 0) | map('multiply', k) | list %}
+              {% set ns.series = ns.series + [(key, dict(zip(starts, kwh)))] %}
+              {% set ns.starts = ns.starts + starts %}
+            {% endfor %}
+            {% set s = dict(ns.series) %}
+            {% set t = namespace(pvh=0, pvb=0, pvg=0, bh=0, bg=0, gh=0, gb=0,
+                                 pv_ev=0, bat_ev=0, grid_ev=0, pv_hp=0, bat_hp=0, grid_hp=0) %}
+            {% for b in ns.starts | unique %}
+              {% set pv = [s.pv.get(b, 0), 0] | max %}
+              {% set imp = [s.imp.get(b, 0), 0] | max %}
+              {% set exp = [s.exp.get(b, 0), 0] | max %}
+              {% set chg = [s.chg.get(b, 0), 0] | max %}
+              {% set dis = [s.dis.get(b, 0), 0] | max %}
+              {% set ev = [s.ev.get(b, 0), 0] | max %}
+              {% set hp = [s.hp.get(b, 0), 0] | max %}
+              {# PV serves home first; export + charge PV cannot cover is
+                 grid->battery, then battery->grid #}
+              {% set short = [exp + chg - pv, 0] | max %}
+              {% set gb = [short, chg, imp] | min %}
+              {% set bg = [short - gb, exp, dis] | min %}
+              {% set rest = short - gb - bg %}
+              {% set pvh = [pv - exp - chg, 0] | max %}
+              {% set pvb = chg - gb %}
+              {% set pvg = exp - bg %}
+              {# losses/jitter: scale PV outflows down so they sum to pv #}
+              {% set f = pv / (pvb + pvg) if rest > 0 and pvb + pvg > 0 else 1 %}
+              {% set pvb = pvb * f %}
+              {% set pvg = pvg * f %}
+              {% set bh = dis - bg %}
+              {% set gh = imp - gb %}
+              {# EV / HP take a share of each home source in proportion to
+                 this bucket's home source mix, capped at the load #}
+              {% set load = pvh + bh + gh %}
+              {% set c = load / (ev + hp) if ev + hp > load else 1 %}
+              {% set ev = ev * c %}
+              {% set hp = hp * c %}
+              {% set fpv = pvh / load if load > 0 else 0 %}
+              {% set fb = bh / load if load > 0 else 0 %}
+              {% set fg = gh / load if load > 0 else 0 %}
+              {% set t.pvh = t.pvh + pvh %}{% set t.pvb = t.pvb + pvb %}{% set t.pvg = t.pvg + pvg %}
+              {% set t.bh = t.bh + bh %}{% set t.bg = t.bg + bg %}
+              {% set t.gh = t.gh + gh %}{% set t.gb = t.gb + gb %}
+              {% set t.pv_ev = t.pv_ev + ev * fpv %}{% set t.bat_ev = t.bat_ev + ev * fb %}{% set t.grid_ev = t.grid_ev + ev * fg %}
+              {% set t.pv_hp = t.pv_hp + hp * fpv %}{% set t.bat_hp = t.bat_hp + hp * fb %}{% set t.grid_hp = t.grid_hp + hp * fg %}
+            {% endfor %}
+            {{ {'pvh': t.pvh | round(3), 'pvb': t.pvb | round(3), 'pvg': t.pvg | round(3),
+                'bh': t.bh | round(3), 'bg': t.bg | round(3),
+                'gh': t.gh | round(3), 'gb': t.gb | round(3),
+                'pv_ev': t.pv_ev | round(3), 'bat_ev': t.bat_ev | round(3), 'grid_ev': t.grid_ev | round(3),
+                'pv_hp': t.pv_hp | round(3), 'bat_hp': t.bat_hp | round(3), 'grid_hp': t.grid_hp | round(3)} | tojson }}
           on_success:
             - lambda: |-
                 auto r = response["response"];
@@ -599,42 +653,29 @@ script:
                   float v = r[k].as<float>();
                   return std::isfinite(v) ? fmaxf(v, 0.0f) : 0.0f;
                 };
-                float pv = kwh("pv"), imp = kwh("imp"), exp_ = kwh("exp");
-                float chg = kwh("chg"), dis = kwh("dis"), ev = kwh("ev"), hp = kwh("hp");
-
-                // PV serves home first; whatever export + charge PV cannot
-                // cover becomes grid→battery, then battery→grid.
-                float pv_home = pv - exp_ - chg;
-                float gb = 0.0f, bg = 0.0f;
-                if (pv_home < 0.0f) {
-                  float shortfall = -pv_home;
-                  gb = fminf(shortfall, fminf(chg, imp));  shortfall -= gb;
-                  bg = fminf(shortfall, fminf(exp_, dis));
-                  pv_home = 0.0f;
-                }
-                float pvb = fmaxf(chg - gb, 0.0f), pvg = fmaxf(exp_ - bg, 0.0f);
-                float bh  = fmaxf(dis - bg, 0.0f), gh  = fmaxf(imp - gb, 0.0f);
-
-                // EV / HP: each takes a share of every home source in proportion
-                // to the day's home source mix (capped so they never exceed load).
-                float load = pv_home + bh + gh;   // = pv + imp + dis - exp - chg
-                float sub = ev + hp;
-                if (sub > load && sub > 0.0f) { ev *= load / sub; hp *= load / sub; }
-                float fpv = load > 0.0f ? pv_home / load : 0.0f;
-                float fb  = load > 0.0f ? bh / load : 0.0f;
-                float fg  = load > 0.0f ? gh / load : 0.0f;
-
-                id(df_pvh) = pv_home; id(df_pvb) = pvb; id(df_pvg) = pvg;
-                id(df_bh)  = bh;      id(df_bg)  = bg;
-                id(df_gh)  = gh;      id(df_gb)  = gb;
-                id(df_pv_ev) = ev * fpv; id(df_bat_ev) = ev * fb; id(df_grid_ev) = ev * fg;
-                id(df_pv_hp) = hp * fpv; id(df_bat_hp) = hp * fb; id(df_grid_hp) = hp * fg;
-                ESP_LOGD("energy", "today kWh pv=%.2f imp=%.2f exp=%.2f chg=%.2f dis=%.2f ev=%.2f hp=%.2f",
-                         pv, imp, exp_, chg, dis, ev, hp);
+                id(df_pvh) = kwh("pvh"); id(df_pvb) = kwh("pvb"); id(df_pvg) = kwh("pvg");
+                id(df_bh)  = kwh("bh");  id(df_bg)  = kwh("bg");
+                id(df_gh)  = kwh("gh");  id(df_gb)  = kwh("gb");
+                id(df_pv_ev) = kwh("pv_ev"); id(df_bat_ev) = kwh("bat_ev"); id(df_grid_ev) = kwh("grid_ev");
+                id(df_pv_hp) = kwh("pv_hp"); id(df_bat_hp) = kwh("bat_hp"); id(df_grid_hp) = kwh("grid_hp");
+                auto now = id(ha_time).now();
+                if (now.is_valid()) id(df_day) = now.day_of_year;
+                ESP_LOGD("energy", "today kWh pv->home=%.2f grid->home=%.2f grid->batt=%.2f",
+                         id(df_pvh), id(df_gh), id(df_gb));
           on_error:
             - logger.log:
                 level: WARN
                 format: "recorder.get_statistics failed; Today Sankey keeps last totals"
+            # ...unless they are yesterday's: after midnight show an empty day.
+            - lambda: |-
+                auto now = id(ha_time).now();
+                if (now.is_valid() && id(df_day) != now.day_of_year) {
+                  id(df_pvh) = id(df_pvb) = id(df_pvg) = 0.0f;
+                  id(df_bh) = id(df_bg) = id(df_gh) = id(df_gb) = 0.0f;
+                  id(df_pv_ev) = id(df_bat_ev) = id(df_grid_ev) = 0.0f;
+                  id(df_pv_hp) = id(df_bat_hp) = id(df_grid_hp) = 0.0f;
+                  id(df_day) = now.day_of_year;
+                }
 
   # Refresh the day totals whenever HA (re)connects (library loading.yaml hook).
   - id: !extend on_ha_connected

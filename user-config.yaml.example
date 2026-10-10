@@ -123,7 +123,8 @@ substitutions:
   #   en_batt_sign    "1" if battery power is +charge / -discharge, "-1" if the
   #                   integration signs it the other way round
   #   en_grid_sign    "1" if grid power is +import / -export, "-1" if it is
-  #                   +export / -import (e.g. Sigenergy grid_active_power)
+  #                   +export / -import (e.g. Sigenergy's *_w grid power variants;
+  #                   the native sensor.sigen_plant_grid_active_power is +import)
   en_power_scale: "1"                                                          # CHANGE
   en_batt_sign: "1"                                                            # CHANGE
   en_grid_sign: "1"                                                            # CHANGE

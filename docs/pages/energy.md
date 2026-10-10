@@ -32,14 +32,16 @@ sensors — tapping it jumps here from anywhere.
 Swipe left for the day's *totals*: a Sankey of energy moved along each
 source→destination path since midnight (PV/Battery/Grid →
 Home/Battery/Grid/EV/Heat-pump). The panel asks HA's recorder for today's
-change on the same kWh counters your Energy dashboard uses
-(`recorder.get_statistics`, on HA connect and every 5 minutes) and splits them
-the way HA's energy-distribution card does: PV serves the home first, any
-export or charge PV cannot cover is attributed grid→battery then
-battery→grid. Per-source and per-sink totals are exact; the EV and heat-pump
-ribbons take a share of each source in proportion to the day's home source
-mix, so that attribution is an approximation. Totals come from HA's
-5-minute statistics, so they trail live readings by up to ~5 minutes.
+5-minute changes on the same kWh counters your Energy dashboard uses
+(`recorder.get_statistics`, on HA connect and every 5 minutes). HA splits each
+5-minute bucket the way its energy-distribution card does — PV's export and
+battery charge come first and the rest of PV serves the home; any export or
+charge PV cannot cover is attributed grid→battery, then battery→grid — and
+the EV and heat pump take a share of each source in proportion to that
+bucket's home mix. The bucket totals are summed, so time-of-day patterns
+(e.g. overnight grid charging) are kept, and the paths land close to
+per-second flow meters. Short-term statistics compile every 5 minutes and the
+panel polls unaligned, so totals trail live readings by up to ~10 minutes.
 
 *Reference rendering of the daily Sankey:*
 
