@@ -581,6 +581,9 @@ script:
             period: 5minute
             types: >-
               {{ ['change'] }}
+            # recorder converts every energy statistic (Wh / MWh / ...) to kWh
+            units: >-
+              {{ {'energy': 'kWh'} }}
           capture_response: true
           response_template: >-
             {% set stats = response.statistics %}
@@ -592,14 +595,14 @@ script:
                           'ev': '${en_ev_energy_entity}',
                           'hp': '${en_hp_energy_entity}',
                           'load': '${en_load_energy_entity}'} %}
-            {# per counter: bucket start -> change, scaled to kWh #}
+            {# per counter: bucket start -> change (kWh, via units). Buckets
+               without a numeric change are dropped, so a missing load bucket
+               falls back to the derived load and any other missing one is 0 #}
             {% set ns = namespace(series=[], starts=[]) %}
             {% for key, sid in ids.items() %}
-              {% set rows = stats.get(sid, []) if sid else [] %}
-              {% set unit = state_attr(sid, 'unit_of_measurement') if sid else none %}
-              {% set k = 1000 if unit == 'MWh' else (0.001 if unit == 'Wh' else 1) %}
+              {% set rows = (stats.get(sid, []) if sid else []) | selectattr('change', 'number') | list %}
               {% set starts = rows | map(attribute='start') | list %}
-              {% set kwh = rows | map(attribute='change') | map('float', 0) | map('multiply', k) | list %}
+              {% set kwh = rows | map(attribute='change') | list %}
               {% set ns.series = ns.series + [(key, dict(zip(starts, kwh)))] %}
               {% set ns.starts = ns.starts + starts %}
             {% endfor %}
@@ -670,11 +673,12 @@ script:
           on_error:
             - logger.log:
                 level: WARN
-                format: "recorder.get_statistics failed; Today Sankey keeps last totals"
+                format: "recorder.get_statistics failed; Today Sankey keeps last totals unless they're from yesterday"
             # ...unless they are yesterday's: after midnight show an empty day.
             - lambda: |-
                 auto now = id(ha_time).now();
-                if (now.is_valid() && id(df_day) != now.day_of_year) {
+                // df_day < 0: no dated success yet (time was not valid) — keep.
+                if (now.is_valid() && id(df_day) >= 0 && id(df_day) != now.day_of_year) {
                   id(df_pvh) = id(df_pvb) = id(df_pvg) = 0.0f;
                   id(df_bh) = id(df_bg) = id(df_gh) = id(df_gb) = 0.0f;
                   id(df_pv_ev) = id(df_bat_ev) = id(df_grid_ev) = 0.0f;
