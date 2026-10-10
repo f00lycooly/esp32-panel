@@ -17,12 +17,13 @@
 #
 # Top bar: the singleton bar (modules/top-bar.yaml, ) draws battery·clock·cog
 # on top_layer over BOTH pages — these pages draw NO top bar and keep content
-# below y=72 ($shell_content_y). The top bar reads pv_kw/home_kw (declared here)
+# below y=72 ($shell_content_y). The top bar reads pv_kw/grid_kw (declared here)
 # and batt_kw (ui-shared) — those ids are PRESERVED below; do not rename them.
 #
-# Inverter sign conventions assumed: battery_power +charge / -discharge;
-# grid_active_power as seen here is small/ambiguous so we read the dedicated
-# grid_import_power (+) and grid_export_power (+) sensors instead.
+# Inverter entities are bound directly (no HA template layer) and normalised
+# panel-side by sensor filters: × ${en_power_scale} (1 = kW source, 0.001 = W)
+# then × the sign substitutions, so internally batt_kw is +charge / -discharge
+# and grid_kw is +import / -export whatever the integration's convention.
 #
 # LVGL-honest (LVGL 9.6): canvas triangle fills for ribbons/arrows, label+MDI for
 # nodes. No SVG/CSS/blur. Decorative children clickable:false so swipes pass.
@@ -59,33 +60,44 @@ globals:
 # ───────────────────────── HA sensors ─────────────────────────
 sensor:
   # ── Live node powers (kW) for the "Now" page ──
-  # pv_kw / home_kw are READ BY THE TOP BAR (top-bar.yaml) — keep these ids.
+  # Bound straight to the integration's entities; the multiply filters turn W
+  # into kW (en_power_scale) and flip signs into the panel's convention.
+  # pv_kw / grid_kw are READ BY THE TOP BAR (top-bar.yaml) — keep these ids.
   - platform: homeassistant
     id: pv_kw            # solar generation, kW (>= 0)
     entity_id: ${en_pv_power_entity}
     internal: true
+    filters:
+      - multiply: ${en_power_scale}
+  # home_kw is OPTIONAL: while it has no finite state (entity absent or
+  # unavailable) refresh_nowflow derives load as pv + grid - batt instead.
   - platform: homeassistant
     id: home_kw          # whole-house consumed power, kW (incl EV + HP)
     entity_id: ${en_consumed_power_entity}
     internal: true
+    filters:
+      - multiply: ${en_power_scale}
   # batt_kw (+charge / -discharge) and batt_soc (SOC %, node subtitle) live in
   # ui-shared.yaml; read via id(batt_kw) / id(batt_soc).
   - platform: homeassistant
-    id: grid_imp_kw      # grid import, kW (>= 0)
-    entity_id: ${en_grid_import_entity}
+    id: grid_kw          # grid power, kW, SIGNED: + import / - export
+    entity_id: ${en_grid_power_entity}
     internal: true
-  - platform: homeassistant
-    id: grid_exp_kw      # grid export, kW (>= 0)
-    entity_id: ${en_grid_export_entity}
-    internal: true
+    filters:
+      - multiply: ${en_power_scale}
+      - multiply: ${en_grid_sign}
   - platform: homeassistant
     id: ev_kw            # EV charge power (Easee), kW (>= 0)  — VIOLET link
     entity_id: ${en_ev_power_entity}
     internal: true
+    filters:
+      - multiply: ${en_power_scale}
   - platform: homeassistant
     id: hp_kw            # heat-pump (SmartPort load 1), kW (>= 0) — ORANGE link
     entity_id: ${en_hp_power_entity}
     internal: true
+    filters:
+      - multiply: ${en_power_scale}
   - platform: homeassistant
     id: solcast_remain   # Solcast remaining generation today, kWh (foot strip)
     entity_id: ${en_solcast_remaining_entity}
@@ -218,11 +230,15 @@ script:
       - lambda: |-
           // ── live powers (kW) ──
           float pv   = fmaxf(id(pv_kw).has_state()   ? id(pv_kw).state   : 0.0f, 0.0f);
-          float load = fmaxf(id(home_kw).has_state() ? id(home_kw).state : 0.0f, 0.0f);
           float bat  = (id(batt_kw).has_state() && !std::isnan(id(batt_kw).state))
                          ? id(batt_kw).state : 0.0f;  // +chg / -dis (NaN → 0)
-          float gimp = fmaxf(id(grid_imp_kw).has_state() ? id(grid_imp_kw).state : 0.0f, 0.0f);
-          float gexp = fmaxf(id(grid_exp_kw).has_state() ? id(grid_exp_kw).state : 0.0f, 0.0f);
+          float net_grid = (id(grid_kw).has_state() && !std::isnan(id(grid_kw).state))
+                         ? id(grid_kw).state : 0.0f;  // + import / - export (NaN → 0)
+          float gimp = fmaxf(net_grid, 0.0f), gexp = fmaxf(-net_grid, 0.0f);
+          // Load: the consumed-power entity if it reports, else the balance
+          // identity pv + grid - batt (en_consumed_power_entity is optional).
+          float load = fmaxf((id(home_kw).has_state() && std::isfinite(id(home_kw).state))
+                         ? id(home_kw).state : pv + net_grid - bat, 0.0f);
           float ev   = fmaxf(id(ev_kw).has_state() ? id(ev_kw).state : 0.0f, 0.0f);
           float hp   = fmaxf(id(hp_kw).has_state() ? id(hp_kw).state : 0.0f, 0.0f);
           // 3kn: has_state() stays true when the entity goes unavailable (state=NaN);
@@ -230,7 +246,6 @@ script:
           int   soc  = (id(batt_soc).has_state() && std::isfinite(id(batt_soc).state)
                         && id(batt_soc).state >= 0.0f && id(batt_soc).state <= 100.0f)
                          ? (int)lroundf(id(batt_soc).state) : -1;
-          float net_grid = gimp - gexp;               // + import / - export
           float home_rest = fmaxf(load - ev - hp, 0.0f);  // Home node = load less EV/HP
 
           // ── canvas: dark wash, then arrows. Canvas sits at screen y=72. ──

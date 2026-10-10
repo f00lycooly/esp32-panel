@@ -72,7 +72,6 @@ restart HA.
 | `spotify_panel.yaml` | `sensor.spotify_panel_recent` / `_playlists` / `_artists` — cover-art feeds for the pickers | [Main](pages/main.md) recent row, Pick Music / Browse, [Alarm](pages/alarm.md) music picker |
 | `alarm_panel.yaml` | The alarm page's helper contract: the `input_text.alarm_ringing` / `input_boolean.alarm_snooze_armed` ringing plumbing (the `sensor.scheduled_alarms` roster with rows `a0`–`a5` + `next`, and the backend that stores/fires alarms, is external — Node-RED, AppDaemon or HA automations; see the file header) | [Alarm](pages/alarm.md) |
 | `energy_daily_flows.yaml` | Instantaneous source→destination flow templates, Riemann-sum integrations and daily `sensor.daily_flow_*` utility meters | [Energy](pages/energy.md) "Today" Sankey |
-| `energy_normalised.yaml` | Normalised instantaneous energy sensors in the exact shape the panel expects — `sensor.pv_power`, `sensor.house_power`, grid import/export, battery power/SOC (the `en_*` / `battery_*` substitutions) | [Energy](pages/energy.md), top-bar battery pill |
 
 The [Screensaver](pages/screensaver.md) forecast needs no package either — set
 `weather_entity` to any `weather.*` entity (HA 2025.10+; the panel calls

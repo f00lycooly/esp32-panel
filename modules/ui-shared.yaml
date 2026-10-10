@@ -49,6 +49,9 @@ sensor:
     id: batt_kw   # +charge / -discharge; read by the energy Sankey "Now" view
     entity_id: ${battery_power_entity}
     internal: true
+    filters:      # → kW, then into the +charge convention (en_* in user-config)
+      - multiply: ${en_power_scale}
+      - multiply: ${en_batt_sign}
   # Battery SOC % — feeds the singleton top-bar battery pill (top-bar.yaml reads
   # the id by contract). Lives here next to batt_kw so every panel that draws the
   # top bar gets it, page-main or not (Hallway has no page-main).
