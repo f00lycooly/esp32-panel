@@ -57,6 +57,7 @@ esphome:
   on_boot:
     - priority: -100
       then:
+        - script.execute: fm_repaint
         - delay: 12s
         - if:
             condition:
@@ -930,13 +931,10 @@ switch:
     icon: mdi:walk
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
+    # Restore publishes state during setup, before LVGL builds the widgets —
+    # fm_repaint guards that; on_boot (-100) repaints once LVGL is up.
     on_state:
-      - lambda: |-
-          bool on = x;
-          lv_obj_set_style_text_color(id(fm_glyph),  lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
-          lv_obj_set_style_text_color(id(fm_status), lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
-          lv_label_set_text(id(fm_status), on ? "ON" : "OFF");
-          lv_obj_set_style_border_color(id(btn_follow_me), lv_color_hex(on ? 0x01B4DE : 0x404040), 0);
+      - script.execute: fm_repaint
 
 # ───── Now-Playing / Multi-Room refresh (1s) ─────
 # np_refresh/mr_refresh early-return unless their page is showing (main_active /
@@ -951,6 +949,16 @@ interval:
       - script.execute: adopt_playing_group
 
 script:
+  - id: fm_repaint
+    then:
+      - lambda: |-
+          if (id(fm_glyph) == nullptr) return;
+          bool on = id(follow_me_state).state;
+          lv_obj_set_style_text_color(id(fm_glyph),  lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
+          lv_obj_set_style_text_color(id(fm_status), lv_color_hex(on ? 0x01B4DE : 0x6B6B6B), 0);
+          lv_label_set_text(id(fm_status), on ? "ON" : "OFF");
+          lv_obj_set_style_border_color(id(btn_follow_me), lv_color_hex(on ? 0x01B4DE : 0x404040), 0);
+
   # ───────────── Now-Playing state machine + presentation (.1) ─────────────
   # Reads the M2 now-playing sensors (.state) and switches IDLE ↔ PLAYING, paints
   # the source/title/artist block + the overlay transport glyph + the play button.
