@@ -158,6 +158,10 @@ entity ids.
   a panel.
 - Only the 7 configured rooms can be shown.
 - Subscriptions grow to about 42–56. That is fine on the P4.
+- HA's ESPHome bridge forwards attribute changes only, never an attribute's
+  removal. If a new track lacks an artist or art that the previous track
+  had, the panel keeps the old value until the room goes idle (title,
+  artist and art are cleared whenever the state leaves playing/paused).
 
 ### 2.5 `sonos_topology.yaml` (106 lines, polled every 5 s). Verdict: **remove**
 

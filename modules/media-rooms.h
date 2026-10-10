@@ -83,21 +83,26 @@ inline bool is_tv(const Room &r) {
          r.content_id.rfind("x-rincon-stream:", 0) == 0;
 }
 
-// Cache updates that drop stale metadata. HA never pushes an attribute's
-// removal (the TV input has no entity_picture, for example), so the old
-// track's title/artist/art would otherwise linger.
-//   • New media_content_id → the track changed; forget the old metadata (the
-//     new title/artist/art follow in the same push).
-//   • State not playing/paused (idle, off, unavailable, ...) → nothing is
-//     loaded; forget the metadata and content id.
-inline void set_content(Room &r, const std::string &x) {
-  if (x != r.content_id) { r.title.clear(); r.artist.clear(); r.art.clear(); }
-  r.content_id = x;
-}
+// Cache updates. HA's ESPHome bridge forwards deltas only
+// (homeassistant/components/esphome/manager.py, _send_home_assistant_state_event
+// / _send_home_assistant_state): an attribute is sent only when its value
+// changed, and nothing at all when it disappears. From the panel, "removed"
+// and "unchanged" therefore look the same, so:
+//   • A new media_content_id must NOT clear title/artist/art: the next track
+//     of the same album keeps the same artist and art URL, which HA never
+//     re-sends.
+//   • State not playing/paused (idle, off, unavailable, unknown) → the hero is
+//     hidden anyway; forget title/artist/art so a later session can't show
+//     them. content_id is kept: it is only read while playing, and a TV room's
+//     htastream id is constant, so clearing it would lose TV detection when
+//     the TV comes back (HA wouldn't re-send the unchanged id).
+// Known limitation: if a new track lacks an artist/art the previous one had,
+// the old value stays until the room leaves playing/paused.
+inline void set_content(Room &r, const std::string &x) { r.content_id = x; }
 inline void set_state(Room &r, const std::string &x) {
   r.state = x;
   if (x != "playing" && x != "paused") {
-    r.title.clear(); r.artist.clear(); r.art.clear(); r.content_id.clear();
+    r.title.clear(); r.artist.clear(); r.art.clear();
   }
 }
 

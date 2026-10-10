@@ -1,5 +1,5 @@
 // Host tests for modules/media-rooms.h: group_members parsing, room lookup,
-// TV detection and the stale-metadata clearing rules. Run with `make test`.
+// TV detection and the stale-metadata rules. Run with `make test`.
 #include "media-rooms.h"
 #include <cstdio>
 using namespace media_rooms;
@@ -60,25 +60,36 @@ int main() {
   t.title = "Song";
   CHECK(!is_tv(t) && display_state(t, is_tv(t)) == "playing");
 
-  // New content id clears the previous track's metadata; same id keeps it
+  // Same-album consecutive tracks: HA re-sends only the changed title, so a
+  // content id change must keep artist/art
   Room m;
   set_state(m, "playing");
-  set_content(m, "x-sonos-spotify:a");
-  m.title = "Old"; m.artist = "Old artist"; m.art = "/api/old";
-  set_content(m, "x-sonos-spotify:a");
-  CHECK(m.title == "Old" && m.art == "/api/old");
-  set_content(m, "x-sonos-htastream:RINCON_123:spdif");   // TV has no entity_picture
-  CHECK(m.title.empty() && m.artist.empty() && m.art.empty());
+  set_content(m, "x-sonos-spotify:track1");
+  m.title = "Track 1"; m.artist = "Band"; m.art = "/api/media_player_proxy/x?cache=album";
+  set_content(m, "x-sonos-spotify:track2");
+  m.title = "Track 2";
+  CHECK(m.artist == "Band" && m.art == "/api/media_player_proxy/x?cache=album" && m.title == "Track 2");
 
-  // Leaving playing/paused (idle, unavailable) clears metadata + content id
-  m.title = "T"; m.art = "/api/x";
+  // Leaving playing/paused (idle, off, unavailable, unknown) clears metadata;
+  // content id is kept (only read while playing)
   set_state(m, "paused");
-  CHECK(m.title == "T");
-  set_state(m, "unavailable");
-  CHECK(m.title.empty() && m.art.empty() && m.content_id.empty() && !is_tv(m));
-  m.title = "T";
+  CHECK(m.title == "Track 2");
   set_state(m, "idle");
-  CHECK(m.title.empty());
+  CHECK(m.title.empty() && m.artist.empty() && m.art.empty());
+  for (const char *st : {"off", "unavailable", "unknown"}) {
+    m.title = "T"; m.art = "/api/x";
+    set_state(m, st);
+    CHECK(m.title.empty() && m.art.empty());
+  }
+
+  // TV room going idle and back: the constant htastream id (not re-sent by
+  // HA) still marks it tv
+  Room tv;
+  set_state(tv, "playing");
+  set_content(tv, "x-sonos-htastream:RINCON_123:spdif");
+  set_state(tv, "idle");
+  set_state(tv, "playing");
+  CHECK(display_state(tv, is_tv(tv)) == "tv");
 
   printf(fails ? "test_rooms: FAILED %d\n" : "test_rooms: ALL PASS\n", fails);
   return fails != 0;

@@ -24,15 +24,9 @@ esphome:
             r.caption = "${caption}";
 
 text_sensor:
-  # ORDER MATTERS. HA sends one update per subscription, in the order the panel
-  # registered them (= the order below), and on every state change it re-sends
-  # all of them. So:
-  #   • media_content_id comes FIRST: a new content id clears the old
-  #     title/artist/art (media_rooms::set_content) before the new ones land.
-  #   • state comes LAST: when the room stops (idle/off/unavailable),
-  #     set_state clears the metadata AFTER the re-sent attributes, so they
-  #     can't repopulate it.
-  # HA never pushes an attribute's removal, hence the explicit clearing.
+  # Subscription order doesn't matter: HA forwards each attribute only when its
+  # value changes (delta-only, see media_rooms::set_state for what that means
+  # for stale metadata).
   - platform: homeassistant
     id: media_room_${idx}_content
     entity_id: media_player.${slug}
