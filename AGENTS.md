@@ -71,6 +71,11 @@ bd close <id>         # Complete work
 
 ## Session Completion
 
+> **This repo is public (GitHub mirror).** `.beads/*.jsonl` is gitignored here
+> and must never be committed — bead text carries private infrastructure
+> details. Beads live on the central Dolt server; skip the usual "commit
+> `.beads/issues.jsonl`" step in this repo.
+
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
 
 **MANDATORY WORKFLOW:**
