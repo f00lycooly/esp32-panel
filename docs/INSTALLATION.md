@@ -12,8 +12,10 @@ for adapting the firmware to your home, see [CUSTOMISATION.md](CUSTOMISATION.md)
 - **USB-C data cable** for the first flash (subsequent updates are OTA).
 - **ESPHome 2026.5.0 or newer** — the hardware module pins
   `esphome: min_version: 2026.5.0` (it relies on current ESP32-P4 + LVGL 9
-  support). Install via `pip install esphome`, the ESPHome container, or the
-  Home Assistant add-on.
+  support). Install it locally with `pip install esphome` (a venv is fine; point the
+  Makefile at it with `ESPHOME=/path/to/esphome`). Build on a workstation — see
+  [Where to build](#where-to-build). The ESPHome container or Home Assistant
+  add-on is fine for `make validate`, not for compiling.
 - **Home Assistant** with the entities your panel will display — plus the
   template packages from `homeassistant/examples/` (below).
 - 2.4/5 GHz Wi-Fi. The panel fetches album art and images over plain HTTP from
@@ -102,8 +104,8 @@ Connect the panel via USB-C, then:
 esphome run waveshare-p4-86-panel.yaml
 ```
 
-ESPHome compiles the firmware (the first build takes a while — it is a full
-ESP-IDF build for the P4) and offers the serial port for upload. The panel
+ESPHome compiles the firmware (the first build takes ~20-25 minutes — it is a
+full ESP-IDF build for the P4 with 2500+ objects; incremental builds take ~5) and offers the serial port for upload. The panel
 reboots into a boot splash, joins your Wi-Fi and starts the UI. If HA is not
 reachable, the splash auto-dismisses after 12 seconds anyway and the UI runs
 offline; the settings cog's status ring shows red until the HA connection is up.
@@ -113,11 +115,25 @@ offline; the settings cog's status ring shows red until the HA connection is up.
 Once on the network, flash over the air:
 
 ```bash
-esphome run waveshare-p4-86-panel.yaml --device <panel-ip-or-mdns-name>
+make flash DEVICE_IP=<panel-ip-or-mdns-name>    # compile + OTA upload
+make upload DEVICE_IP=<panel-ip-or-mdns-name>   # upload the last build only
+make logs DEVICE_IP=<panel-ip-or-mdns-name>     # stream logs
 ```
+
+(Equivalent to `esphome run waveshare-p4-86-panel.yaml --device <ip>`.)
 
 OTA reuses the existing API key, so Home Assistant keeps trusting the device
 across updates.
+
+### Where to build
+
+Compile on a workstation with a local ESPHome, then OTA-upload from there.
+Do not compile inside a shared server's ESPHome container: a cold ESP-IDF build
+is heavy on RAM and CPU and can starve the host and the services running on it.
+`make validate CONTAINER=<name>` (cheap, no C++ build) works in a container;
+`make compile` refuses there unless you set `ALLOW_CONTAINER_COMPILE=1`.
+`make validate` does not compile C++ lambdas, so run a full local
+`make compile` before relying on a change.
 
 ## 7. Add the device to Home Assistant
 

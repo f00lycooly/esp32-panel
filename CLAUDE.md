@@ -58,13 +58,22 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+make test                       # host unit tests for panel-side C++ (tests/)
+make validate                   # esphome config: schema + codegen (fast)
+make compile                    # full firmware build, local esphome 2026.9.x
+make flash DEVICE_IP=<ip>       # compile + OTA upload (make upload / make logs also exist)
+make secret-scan                # publish gate (also runs in CI)
 ```
+
+- `make validate` does NOT compile C++ lambdas. Run a full local `make compile`
+  before merging any lambda or C++ change.
+- First build takes ~20-25 min; incremental builds ~5 min.
+- Compiles must run on a workstation, never inside a shared server's ESPHome
+  container (a cold build can exhaust the host and take co-hosted services
+  down). Container mode (`CONTAINER=...`) is for `make validate` only;
+  `make compile` refuses there unless `ALLOW_CONTAINER_COMPILE=1`.
+- Use a venv esphome via `make compile ESPHOME=/path/to/esphome`.
 
 ## Architecture Overview
 

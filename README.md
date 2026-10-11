@@ -50,11 +50,14 @@ See [docs/HARDWARE.md](docs/HARDWARE.md) for the full hardware notes.
 4. **Edit them** — Wi-Fi and API key in `secrets.yaml`; your Home Assistant
    entities, room roster and panel identity in `user-config.yaml`
    (see [docs/CUSTOMISATION.md](docs/CUSTOMISATION.md)).
-5. **Flash**
+5. **Build and flash** with a local ESPHome on your workstation
    ```bash
-   esphome run waveshare-p4-86-panel.yaml
+   make compile                      # first build ~20-25 min, incremental ~5 min
+   esphome run waveshare-p4-86-panel.yaml   # first flash over USB
+   make flash DEVICE_IP=<panel-ip>   # later updates: compile + OTA
    ```
-   First flash over USB, then over-the-air thereafter. Full walkthrough,
+   Don't compile inside a shared server's ESPHome container — a cold build can
+   exhaust the host (`make compile` refuses in container mode). Full walkthrough,
    including the Home Assistant-side template packages the pages expect, in
    [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
