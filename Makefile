@@ -18,9 +18,13 @@
 # Usage:
 #   make generate               # expand swell-manifest.yaml → modules/generated/
 #   make validate               # esphome config  (schema + codegen; fast)
-#   make compile                # full C++ build
+#   make compile                # full C++ build (LOCAL esphome only; see below)
+#   make upload DEVICE_IP=<ip>  # OTA-upload the last build to the panel
+#   make logs DEVICE_IP=<ip>    # stream device logs
+#   make flash DEVICE_IP=<ip>   # compile + upload
 #   make test                   # host unit tests for panel-side C++ (tests/)
 #   make validate CONTAINER=X   # same, but inside docker container X
+#                               # (validate only: compile is refused there)
 #   make hooks                  # install the secret-scan pre-commit hook
 #   make secret-scan            # run the publish gate manually
 #   make clean                  # remove local build artifacts (.esphome/)
@@ -28,6 +32,14 @@
 # Variables:
 #   DEVICE    ?= waveshare-p4-86-panel.yaml   # device file to build
 #   CONTAINER ?=                              # empty = local esphome binary
+#   ESPHOME   ?= esphome                      # local mode: path to the binary,
+#                                             # e.g. ESPHOME=~/.venvs/esphome/bin/esphome
+#   DEVICE_IP ?=                              # panel address for upload/logs/flash
+#
+# Compiles MUST run on a workstation, not in a shared server's ESPHome
+# container: a cold ESP-IDF build of this firmware (2500+ objects, ~20-25 min)
+# can exhaust the host's RAM/CPU and take co-hosted services down. Build
+# locally, then OTA-upload. Container compiles need ALLOW_CONTAINER_COMPILE=1.
 
 # Pipefail-safe shell: any pipeline stage failing fails the recipe line.
 # (Never gate success on the exit code of a `... | tail` wrapper.)
@@ -36,6 +48,8 @@ SHELL := /bin/bash
 
 DEVICE    ?= waveshare-p4-86-panel.yaml
 CONTAINER ?=
+ESPHOME   ?= esphome
+DEVICE_IP ?=
 REPO_DIR  := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # docker exec does NOT inherit the dashboard process's environment. ESPHome
@@ -47,7 +61,6 @@ PIO_ENV := -e PLATFORMIO_CACHE_DIR=/cache/platformio/cache \
            -e PLATFORMIO_PLATFORMS_DIR=/cache/platformio/platforms
 
 ifeq ($(strip $(CONTAINER)),)
-  ESPHOME    := esphome
   CONFIG_DIR := $(REPO_DIR)
   TARGET     := $(REPO_DIR)/$(DEVICE)
 else
@@ -56,7 +69,7 @@ else
   TARGET     := /config/$(DEVICE)
 endif
 
-.PHONY: generate validate compile test clean hooks secret-scan check-config
+.PHONY: generate validate compile compile-guard check-ip upload logs flash test clean hooks secret-scan check-config
 
 # Expand swell-manifest.yaml → modules/generated/swell-*.yaml.
 # Runs on the host; generated files are committed.
@@ -94,8 +107,41 @@ endif
 validate: check-config
 	@$(ESPHOME) config "$(TARGET)"
 
-compile: check-config
+# Guard runs before check-config so a refusal never needs docker.
+compile-guard:
+ifneq ($(strip $(CONTAINER)),)
+ifneq ($(ALLOW_CONTAINER_COMPILE),1)
+	@echo "x refusing to compile inside container '$(CONTAINER)'."; \
+	  echo "  A cold ESP-IDF build (2500+ objects, ~20-25 min) can exhaust the host's"; \
+	  echo "  RAM/CPU and take co-hosted services down. Build with a local esphome"; \
+	  echo "  (make compile [ESPHOME=/path/to/esphome]) and OTA-upload with make upload."; \
+	  echo "  Override only if you know the host can take it: ALLOW_CONTAINER_COMPILE=1"; \
+	  exit 1
+endif
+endif
+
+compile: compile-guard check-config
 	@$(ESPHOME) compile "$(TARGET)"
+
+# Upload/logs/flash are local-only and need the panel's address. check-ip runs
+# first so a missing DEVICE_IP fails before any 20-25 min compile.
+check-ip:
+ifneq ($(strip $(CONTAINER)),)
+	@echo "x upload/logs/flash are local-only; unset CONTAINER and use a local esphome."; \
+	  exit 1
+endif
+	@test -n "$(strip $(DEVICE_IP))" || { \
+	  echo "x DEVICE_IP is required: make $(firstword $(MAKECMDGOALS)) DEVICE_IP=<panel-ip-or-mdns-name>"; \
+	  exit 1; }
+
+upload logs: check-ip
+	@$(ESPHOME) $@ "$(TARGET)" --device "$(DEVICE_IP)"
+
+# compile + upload, sequenced explicitly so `make -j` cannot upload mid-build.
+# (`deploy` is left to the optional deploy.local.mk.)
+flash: check-ip
+	@$(MAKE) --no-print-directory compile
+	@$(MAKE) --no-print-directory upload
 
 # Host unit tests for header-only panel C++ (modules/*.h). Needs a C++17
 # compiler only — no ESPHome. Binaries go to build/tests/ (gitignored).
@@ -127,6 +173,7 @@ hooks:
 # Site-specific deploy targets (OTA upload, container sync, device IPs) live
 # in an optional, gitignored deploy.local.mk. This keeps the public repo free
 # of any one site's infrastructure while letting operators add e.g.:
-#   deploy: compile
-#   	docker exec ESPHome esphome upload /config/$(DEVICE) --device $(IP)
+#   deploy: flash
+# (set DEVICE_IP in that file, e.g. `DEVICE_IP ?= panel.local`), or any
+# site-specific step such as syncing config elsewhere before `make flash`.
 -include deploy.local.mk
