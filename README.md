@@ -52,9 +52,10 @@ See [docs/HARDWARE.md](docs/HARDWARE.md) for the full hardware notes.
    (see [docs/CUSTOMISATION.md](docs/CUSTOMISATION.md)).
 5. **Build and flash** with a local ESPHome on your workstation
    ```bash
-   make compile                      # first build ~20-25 min, incremental ~5 min
-   esphome run waveshare-p4-86-panel.yaml   # first flash over USB
-   make flash DEVICE_IP=<panel-ip>   # later updates: compile + OTA
+   esphome run waveshare-p4-86-panel.yaml   # first flash over USB (compiles + uploads)
+   # or, for later updates over the air (compile + OTA):
+   make flash DEVICE_IP=<panel-ip>
+   # `make compile` alone just builds (first ~20-25 min, incremental ~5 min)
    ```
    Don't compile inside a shared server's ESPHome container — a cold build can
    exhaust the host (`make compile` refuses in container mode). Full walkthrough,

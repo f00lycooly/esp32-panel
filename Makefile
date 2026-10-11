@@ -69,7 +69,7 @@ else
   TARGET     := /config/$(DEVICE)
 endif
 
-.PHONY: generate validate compile compile-guard upload logs flash test clean hooks secret-scan check-config
+.PHONY: generate validate compile compile-guard check-ip upload logs flash test clean hooks secret-scan check-config
 
 # Expand swell-manifest.yaml → modules/generated/swell-*.yaml.
 # Runs on the host; generated files are committed.
@@ -123,15 +123,25 @@ endif
 compile: compile-guard check-config
 	@$(ESPHOME) compile "$(TARGET)"
 
-# Upload/logs run locally against the panel's address (OTA).
-upload logs:
+# Upload/logs/flash are local-only and need the panel's address. check-ip runs
+# first so a missing DEVICE_IP fails before any 20-25 min compile.
+check-ip:
+ifneq ($(strip $(CONTAINER)),)
+	@echo "x upload/logs/flash are local-only; unset CONTAINER and use a local esphome."; \
+	  exit 1
+endif
 	@test -n "$(strip $(DEVICE_IP))" || { \
-	  echo "x DEVICE_IP is required: make $@ DEVICE_IP=<panel-ip-or-mdns-name>"; \
+	  echo "x DEVICE_IP is required: make $(firstword $(MAKECMDGOALS)) DEVICE_IP=<panel-ip-or-mdns-name>"; \
 	  exit 1; }
+
+upload logs: check-ip
 	@$(ESPHOME) $@ "$(TARGET)" --device "$(DEVICE_IP)"
 
-# compile + upload. (`deploy` is left to the optional deploy.local.mk.)
-flash: compile upload
+# compile + upload, sequenced explicitly so `make -j` cannot upload mid-build.
+# (`deploy` is left to the optional deploy.local.mk.)
+flash: check-ip
+	@$(MAKE) --no-print-directory compile
+	@$(MAKE) --no-print-directory upload
 
 # Host unit tests for header-only panel C++ (modules/*.h). Needs a C++17
 # compiler only — no ESPHome. Binaries go to build/tests/ (gitignored).
